@@ -328,11 +328,19 @@ export function planDatabaseQuery(queryText = '', schema = {}) {
  * Computes exact deterministic calculations with zero hallucination.
  */
 export function executeStructuredQuery(queryPlan, tableRecords = [], queryLang = 'en-US') {
-  if (!queryPlan || !Array.isArray(tableRecords) || tableRecords.length === 0) {
+  if (!queryPlan || !Array.isArray(tableRecords)) {
     return null;
   }
 
   const { operation, table } = queryPlan;
+  if (tableRecords.length === 0) {
+    const summaryText = queryLang.startsWith('mr')
+      ? `${table} मध्ये सध्या कोणतीही सार्वजनिक नोंद उपलब्ध नाही.`
+      : queryLang.startsWith('hi')
+        ? `${table} में अभी कोई सार्वजनिक जानकारी उपलब्ध नहीं है।`
+        : `There are currently no public ${table} items available.`;
+    return { success: true, operation, table, summaryText, computedData: { count: 0 } };
+  }
 
   switch (operation) {
     case 'COUNT': {
@@ -349,9 +357,9 @@ export function executeStructuredQuery(queryPlan, tableRecords = [], queryLang =
       }
 
       const summaryText = queryLang.startsWith('mr')
-        ? `डेटाबेसमधील माहितीनुसार: ${table} मध्ये एकूण ${count} ${label} आहेत.`
+        ? `${table} मध्ये एकूण ${count} ${label} आहेत.`
         : queryLang.startsWith('hi')
-          ? `डेटाबेस रिकॉर्ड के अनुसार: ${table} में कुल ${count} ${label} उपलब्ध हैं।`
+          ? `${table} में कुल ${count} ${label} उपलब्ध हैं।`
           : `There are currently ${count} ${label} available.`;
 
       return {

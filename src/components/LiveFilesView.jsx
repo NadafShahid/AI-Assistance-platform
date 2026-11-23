@@ -22,14 +22,9 @@ import {
   ChevronRight,
   Plus
 } from 'lucide-react';
-import { extractKnowledgeFromJson, parseJsonFile } from '../utils/aiKnowledgeExtractor';
-import { detectFileType, analyzeDatabaseFile } from '../utils/codebaseAnalyzer';
-import { extractDatabaseCredentials, fetchExternalDatabaseRecords } from '../utils/databaseKeyExtractor';
-import { isZipFile, expandFileList } from '../utils/zipHandler';
 import { getAccuracyAuditSummary, clearAccuracyAuditLog } from '../utils/accuracyVerificationEngine';
 import {
   saveFileToLocalStore,
-  saveFilesBatchToLocalStore,
   getFileFromLocalStore,
   deleteFileFromLocalStore
 } from '../utils/localFileStore';
@@ -48,28 +43,7 @@ import {
   cleanupOrphanedDriveFolders
 } from '../services/googleDriveService';
 import GoogleDriveSetupModal from './GoogleDriveSetupModal';
-
-const TEXT_EXT_REGEX = /\.(html?|css|scss|sass|less|jsx?|tsx?|mjs|cjs|vue|svelte|json|sql|csv|tsv|txt|md|markdown|xml|ya?ml|py|go|java|php|rb|rs|prisma|env|sh|bat|ini|toml|graphql|gql|log)$/i;
-
-function isTextFile(file) {
-  if (!file) return true;
-  if (file.type && (file.type.startsWith('text/') || file.type === 'application/json' || file.type === 'application/javascript' || file.type === 'application/xml')) {
-    return true;
-  }
-  return TEXT_EXT_REGEX.test(file.name || '');
-}
-
-function readFileAsTextSafe(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = typeof e.target.result === 'string' ? e.target.result.replace(/\0/g, ' ') : '';
-      resolve(text);
-    };
-    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-    reader.readAsText(file);
-  });
-}
+import { uploadIngestionFiles } from '../firebase';
 
 export default function LiveFilesView({
   currentAssistant,
@@ -196,227 +170,64 @@ export default function LiveFilesView({
 
   // Upload files specifically targeting an assistant
   const handleFileUploadForAssistant = async (e, targetAssistant) => {
-    const rawFileList = Array.from(e.target.files || []);
-    if (!rawFileList.length) return;
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    if (!targetAssistant?.id || !onUpdateAssistantFiles) {
+      showNotice('error', 'Select an existing assistant before processing knowledge files.');
+      e.target.value = '';
+      return;
+    }
 
     setIsUploading(true);
-    const driveReady = isDriveConnected();
-    const targetName = targetAssistant?.name || targetAssistant?.id || 'Shared Workspace';
-    const targetId = targetAssistant?.id || targetName;
-    const currentFiles = getAssistantFiles(targetAssistant);
-    const newRecords = [];
-    const newExtractedKb = [];
-    let detectedDbConfig = null;
-    let detectedDbProvider = null;
-    let newDbRecords = [];
-
-    const hasZip = rawFileList.some(isZipFile);
-    if (hasZip) {
-      showNotice('info', 'Unpacking .zip archive and extracting database & project files...');
-    }
-
-    let fileList = rawFileList;
     try {
-      fileList = await expandFileList(rawFileList);
-    } catch (zipErr) {
-      console.warn('Failed to expand archive:', zipErr);
-      showNotice('error', 'Failed to unpack .zip archive: ' + zipErr.message);
-    }
+      const uploaded = await uploadIngestionFiles(files);
+      const response = await fetch('/api/agent/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${uploaded.idToken}` },
+        body: JSON.stringify({ agentId: targetAssistant.id, files: uploaded.files })
+      });
+      const ingest = await response.json().catch(() => ({}));
+      if (!response.ok || !ingest.success || !Array.isArray(ingest.knowledgeBase) || !ingest.knowledgeBase.length) {
+        const details = (ingest.files || []).map(file => `${file.file}: ${file.reason || file.status}`).join('; ');
+        throw new Error(ingest.error || details || 'No source-backed knowledge was extracted.');
+      }
 
-    const uploadedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-    // 1. Read & analyze all files concurrently via Promise.all
-    const preparedItems = (await Promise.all(fileList.map(async (file, idx) => {
-      try {
-        const isText = file.textContent !== undefined
-          ? !file.textContent.startsWith('[Binary File:')
-          : isTextFile(file);
-
-        let content = file.textContent !== undefined ? file.textContent : '';
-
-        if (content === '' && isText) {
-          try {
-            content = await readFileAsTextSafe(file);
-          } catch (err) {
-            content = `[Text read failed: ${err.message}]`;
-          }
-        } else if (!isText && !content) {
-          content = `[Binary file: ${file.name}, type: ${file.type || 'unknown'}, size: ${(file.size / 1024).toFixed(1)} KB]`;
-        }
-
-        const tier = detectFileType(file.name, isText ? content : '');
-        const fileId = `f_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 7)}`;
-
-        let itemsCount = 0;
-        const fileKb = [];
-        const fileDbRecs = [];
-        let fileDbCreds = null;
-
-        if (isText && (file.name.endsWith('.json') || file.type === 'application/json')) {
-          const parsed = parseJsonFile(content);
-          if (parsed.success) {
-            const extracted = extractKnowledgeFromJson(parsed.data, targetName, 'Website');
-            itemsCount = extracted?.itemsExtracted || 0;
-            if (extracted?.knowledgeBase && extracted.knowledgeBase.length > 0) {
-              fileKb.push(...extracted.knowledgeBase);
-            }
-          }
-        } else if (tier === 'database' && isText) {
-          const dbAnalysis = analyzeDatabaseFile(file.name, content);
-          itemsCount = dbAnalysis?.knowledgeBase?.length || 0;
-          if (dbAnalysis?.knowledgeBase && dbAnalysis.knowledgeBase.length > 0) {
-            fileKb.push(...dbAnalysis.knowledgeBase);
-          }
-          if (dbAnalysis?.databaseRecords && dbAnalysis.databaseRecords.length > 0) {
-            fileDbRecs.push(...dbAnalysis.databaseRecords);
-          }
-        }
-
-        if (isText) {
-          const dbCreds = extractDatabaseCredentials(file.name, content);
-          if (dbCreds.detected && dbCreds.config) {
-            fileDbCreds = dbCreds;
-          }
-        }
-
+      const existingFiles = getAssistantFiles(targetAssistant);
+      const uploadedAt = new Date().toISOString();
+      const newFiles = (ingest.files || []).filter(file => file.status === 'extracted').map(file => {
+        const original = files.find(item => item.name === file.file);
         return {
-          fileId,
-          file,
-          isText,
-          content,
-          tier,
-          itemsCount,
-          fileKb,
-          fileDbRecs,
-          fileDbCreds
+          id: `${targetAssistant.id}_${file.file}_${Date.now()}`, name: file.file,
+          mimeType: original?.type || 'application/octet-stream', sizeBytes: original?.size || 0,
+          type: 'knowledge', uploadedAt, extractedChunks: file.extractedChunks || 0, ingestionStatus: file.status
         };
-      } catch (err) {
-        console.error('Error processing file upload:', file.name, err);
-        return null;
+      });
+      const allowlist = { ...(targetAssistant.publicFieldAllowlist || {}) };
+      for (const [collection, fields] of Object.entries(ingest.publicFieldAllowlist || {})) {
+        allowlist[collection] = [...new Set([...(allowlist[collection] || []), ...fields])];
       }
-    }))).filter(Boolean);
-
-    // 2. Persist ALL files locally in ONE single batched IndexedDB transaction (< 30ms)
-    await saveFilesBatchToLocalStore(
-      preparedItems.map((it) => ({
-        id: it.fileId,
-        name: it.file.name,
-        relativePath: it.file.relativePath || it.file.name,
-        mimeType: it.file.type || (it.isText ? 'text/plain' : 'application/octet-stream'),
-        type: it.tier,
-        content: it.content,
-        blob: it.file,
-        assistantName: targetName
-      }))
-    );
-
-    const driveSyncQueue = [];
-    for (const it of preparedItems) {
-      if (it.fileKb.length > 0) newExtractedKb.push(...it.fileKb);
-      if (it.fileDbRecs.length > 0) newDbRecords.push(...it.fileDbRecs);
-      if (it.fileDbCreds) {
-        detectedDbConfig = it.fileDbCreds.config;
-        detectedDbProvider = it.fileDbCreds.providerName;
-      }
-
-      const driveMeta = {
-        storageStatus: driveReady ? 'syncing' : 'local_cached',
-        driveFolderPath: `Echo AI Agents / ${targetName} / ${it.tier === 'frontend' ? 'Frontend' : it.tier === 'backend' ? 'Backend' : 'Database'}`
+      const previous = targetAssistant.ingestionSummary || {};
+      const summary = {
+        extractedFileCount: Number(previous.extractedFileCount || 0) + Number(ingest.extractedFileCount || 0),
+        failedFileCount: Number(previous.failedFileCount || 0) + Number(ingest.failedFileCount || 0),
+        extractedChunks: Number(previous.extractedChunks || 0) + Number(ingest.extractedChunks || 0)
       };
-
-      newRecords.push({
-        id: it.fileId,
-        name: it.file.name,
-        relativePath: it.file.relativePath || it.file.name,
-        size: `${(it.file.size / 1024).toFixed(1)} KB`,
-        sizeBytes: it.file.size,
-        mimeType: it.file.type || (it.isText ? 'text/plain' : 'application/octet-stream'),
-        type: it.tier,
-        categoryLabel: it.tier === 'frontend' ? 'Frontend (UI/Pages)' : it.tier === 'backend' ? 'Backend (APIs/Routes)' : 'Database (Records/Catalog)',
-        uploadedAt: uploadedTime,
-        itemsCount: it.itemsCount,
-        isBinary: !it.isText,
-        contentPreview: it.isText ? it.content.slice(0, 1500) : '',
-        ...driveMeta
-      });
-
-      driveSyncQueue.push({
-        id: it.fileId,
-        name: it.file.name,
-        mimeType: it.file.type || (it.isText ? 'text/plain' : 'application/octet-stream'),
-        type: it.tier,
-        content: it.content,
-        rawFile: it.file
-      });
+      await onUpdateAssistantFiles(
+        targetAssistant.id,
+        [...newFiles, ...existingFiles],
+        [...(targetAssistant.knowledgeBase || []), ...ingest.knowledgeBase],
+        [...(targetAssistant.databaseRecords || []), ...(ingest.databaseRecords || [])],
+        null, allowlist, summary, true
+      );
+      const failedNames = (ingest.files || []).filter(file => file.status !== 'extracted').map(file => file.file);
+      showNotice('success', `Extracted ${ingest.extractedFileCount} file(s), indexed ${ingest.extractedChunks} source chunks, and skipped ${failedNames.length} file(s)${failedNames.length ? `: ${failedNames.join(', ')}` : ''}.`);
+    } catch (error) {
+      showNotice('error', error.message || 'The secure file ingestion service could not process these files.');
+    } finally {
+      setIsUploading(false);
+      e.target.value = '';
     }
-
-    if (hasZip) {
-      showNotice('success', `Unpacked & indexed ${newRecords.length} files from archive into Knowledge Base!`);
-    }
-
-    // If database credentials were discovered, probe live database concurrently (~0.5-2.5s max)
-    if (detectedDbConfig) {
-      try {
-        const liveResult = await fetchExternalDatabaseRecords(detectedDbConfig);
-        if (liveResult && liveResult.success && liveResult.records.length > 0) {
-          newDbRecords.push(...liveResult.records);
-          if (liveResult.knowledgeBase && liveResult.knowledgeBase.length > 0) {
-            newExtractedKb.push(...liveResult.knowledgeBase);
-          }
-          showNotice('success', `🔥 Live Database Connected: ${detectedDbProvider} (${liveResult.records.length} records fetched from ${liveResult.source})!`);
-        } else {
-          showNotice('info', `🔥 Live Database Configured: ${detectedDbProvider} (Direct real-time access enabled)`);
-        }
-      } catch (liveErr) {
-        console.warn('Live DB probe error:', liveErr);
-      }
-    }
-
-    const updatedFileList = [...newRecords, ...currentFiles];
-
-    if (targetAssistant && onUpdateAssistantFiles) {
-      let updatedKb = null;
-      if (newExtractedKb.length > 0) {
-        const existingKb = Array.isArray(targetAssistant.knowledgeBase) ? targetAssistant.knowledgeBase : [];
-        updatedKb = [...existingKb, ...newExtractedKb];
-      }
-      let updatedDbRecords = null;
-      if (newDbRecords.length > 0) {
-        const existingRecords = Array.isArray(targetAssistant.databaseRecords) ? targetAssistant.databaseRecords : [];
-        const seen = new Set(existingRecords.map(r => r.name.toLowerCase()));
-        updatedDbRecords = [...existingRecords];
-        for (const rec of newDbRecords) {
-          if (!seen.has(rec.name.toLowerCase())) {
-            seen.add(rec.name.toLowerCase());
-            updatedDbRecords.push(rec);
-          }
-        }
-      }
-      await onUpdateAssistantFiles(targetId, updatedFileList, updatedKb, updatedDbRecords, detectedDbConfig);
-    }
-
-    setIsUploading(false);
-    if (e.target) e.target.value = '';
-
-    // 3. Kick off concurrent background Google Drive sync (non-blocking)
-    if (driveReady && driveSyncQueue.length > 0) {
-      syncAgentFilesToDriveInBackground({
-        agentId: targetName,
-        files: driveSyncQueue,
-        onComplete: (results) => {
-          const syncedCount = (results || []).filter(r => r?.ok).length;
-          if (syncedCount > 0) {
-            showNotice('success', `Synced ${syncedCount}/${driveSyncQueue.length} file(s) to Google Drive for "${targetName}"!`);
-          }
-        }
-      });
-    }
-
-    const kbCountMsg = newExtractedKb.length > 0 ? ` and indexed ${newExtractedKb.length} Q&A facts` : '';
-    const driveHint = driveReady ? ' (syncing to Google Drive in background...)' : '';
-    showNotice('success', `Saved ${newRecords.length} file(s) inside "${targetName}"${kbCountMsg}${driveHint}`);
   };
-
   // Delete file from a specific assistant
   const handleDeleteFileForAssistant = async (fileObj, targetAssistant) => {
     const currentFiles = getAssistantFiles(targetAssistant);

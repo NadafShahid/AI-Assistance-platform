@@ -9,7 +9,7 @@ import {
   ArrowRight,
   ShieldCheck
 } from 'lucide-react';
-import { autoDevelopAgentFromBrief, INDUSTRY_TEMPLATES } from '../utils/autoAgentDeveloper';
+import { autoDevelopAgentFromBrief } from '../utils/autoAgentDeveloper';
 
 export default function AutoDevelopModal({
   isOpen,
@@ -38,7 +38,11 @@ export default function AutoDevelopModal({
     setSuccessMsg('');
     try {
       const developed = await autoDevelopAgentFromBrief(briefInput, currentAssistant);
-      onApplyDevelopedAgent(developed);
+      const applied = await onApplyDevelopedAgent(developed);
+      if (applied === false) {
+        setSuccessMsg('Upload verified source files before creating a new agent. No facts were generated from this description.');
+        return;
+      }
       setSuccessMsg(`✓ Successfully auto-developed "${developed.name}"! System prompt, voice, greeting, and FAQs are updated and ready for embed.`);
       setTimeout(() => {
         onClose();

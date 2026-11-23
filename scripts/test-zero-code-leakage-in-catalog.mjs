@@ -31,10 +31,12 @@ assert(!isCustomerSafeFaq('How do I query the database schema?', 'SELECT * FROM 
 const widget = fs.readFileSync('public/widget.js', 'utf8');
 const api = fs.readFileSync('api/agent/query.js', 'utf8');
 const packager = fs.readFileSync('src/utils/agentPackager.js', 'utf8');
+const manageApi = fs.readFileSync('api/agent/manage.js', 'utf8');
 assert(widget.includes('/api/agent/query'));
 for (const unsafe of ['databaseRecords', 'databaseConfig', 'supabaseKey', 'firestore.googleapis.com', 'api.groq.com', 'api.openai.com']) assert(!widget.includes(unsafe), `Widget leaked ${unsafe}`);
-assert(api.includes("readAgent('public_agents'") && api.includes("readAgent('private_agents'"));
-assert(api.includes('publicFieldAllowlist') && api.includes('sanitizePublicRecords'));
+assert(api.includes("firestoreGet('public_agents'") && api.includes("firestoreGet('private_agents'"));
+assert(api.includes('privateAgentDocumentId') && api.includes('priv.tenantId') && api.includes('sanitizePublicRecords'));
+assert(manageApi.includes('claims.user_id') && manageApi.includes('tenantId: claims.user_id') && manageApi.includes('public_agents'));
 assert(!/database:\s*agent\.(?:database|databaseConfig|dbRecords|databaseRecords)/.test(packager));
 
 console.log('PASS: ingestion, catalog validation, and public widget data boundary');

@@ -25,7 +25,8 @@ import {
   detectTextLanguage,
   isFarewellMessage
 } from '../utils/voiceConsistency';
-import { generateAIResponse, getUserApiKeys, transcribeAudioWithGroqWhisper } from '../services/aiCompletionService';
+import { getUserApiKeys, transcribeAudioWithGroqWhisper } from '../services/aiCompletionService';
+import { queryAgent } from '../services/agentQueryClient';
 import RichMessageContent from './RichMessageContent';
 import { stripLinksForSpeech } from '../utils/richMessageParser';
 
@@ -58,6 +59,7 @@ export default function VoiceTestModal({ isOpen, onClose, assistant }) {
   const lastDetectedLangRef = useRef('en-IN');
   const speechHandledRef = useRef(false);
   const messagesRef = useRef([]);
+  const conversationIdRef = useRef(`voice-preview-${assistant?.id || assistant?.name || 'agent'}-${Date.now()}`);
   const synthRef = useRef(typeof window !== 'undefined' ? window.speechSynthesis : null);
   const chatBottomRef = useRef(null);
   const lastInputWasVoiceRef = useRef(false);
@@ -509,28 +511,8 @@ export default function VoiceTestModal({ isOpen, onClose, assistant }) {
     const shouldAutoListen = isVoiceTurn && !isFarewellMessage(cleanText);
 
     try {
-      const activeKey = assistant?.apiKey || getUserApiKeys().activeKey || '';
-      const defaultDetailedPrompt = `You are ${assistantName}, a warm, polite, and knowledgeable AI voice & chat assistant. Provide thorough, accurate, and well-structured answers customized to the complexity of each question.`;
-      const reply = await generateAIResponse(
-        cleanText,
-        assistant?.prompt || assistant?.systemPrompt || defaultDetailedPrompt,
-        assistant?.knowledgeBase || [],
-        activeKey,
-        {
-          agentName: assistantName,
-          databaseRecords: assistant?.databaseRecords || [],
-          databaseConfig: assistant?.databaseConfig || null,
-          siteBlueprint: assistant?.siteBlueprint || null,
-          frontendIntelligence: assistant?.siteBlueprint?.frontendIndex || null,
-          projectArchitecture: assistant?.projectArchitecture || assistant?.siteBlueprint?.projectArchitecture || null,
-          deepProjectIndex: assistant?.deepProjectIndex || assistant?.siteBlueprint?.deepProjectIndex || null,
-          conversationHistory: (messagesRef.current || []).slice(-12),
-          whisperLang,
-          previousLang: prevLang
-        }
-      );
-
-      const replyText = reply || `I heard: "${cleanText}". How else can I help?`;
+      const result = await queryAgent(assistant?.id || assistant?.agentId || assistant?.name, cleanText, conversationIdRef.current);
+      const replyText = result.reply;
 
       const botMsg = {
         id: 'bot-' + Date.now(),

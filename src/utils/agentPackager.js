@@ -2,10 +2,10 @@ import JSZip from 'jszip';
 
 /**
  * Agent Packager Utility
- * Compiles a completely standalone, zero-API-key AI Voice Agent package.
+ * Compiles a standalone widget client that calls the secure agent API.
  * Can export as:
- * 1. Single standalone .js file with embedded trained intelligence
- * 2. Full .zip bundle (standalone .js + index.html demo + model.json + README.md)
+ * 1. Single standalone .js client
+ * 2. Full .zip bundle (standalone .js + index.html demo + public config + README.md)
  */
 
 function sanitizeSlug(name) {
@@ -17,25 +17,21 @@ function sanitizeSlug(name) {
 
 /**
  * Builds the standalone self-contained JavaScript script
- * Contains the agent's knowledge base, persona, locked voice engine,
- * and semantic reasoning engine with 0 external API keys required!
+ * Contains public presentation settings only; all answers come from the central API.
  */
 export function generateStandaloneScriptContent(agent) {
   const agentData = {
-    id: agent.id || `agent_${Date.now()}`,
+    id: agent.widgetId || agent.id || agent.agentId || agent.name || `agent_${Date.now()}`,
     name: agent.name || 'Help Desk AI',
     role: agent.role || 'Customer Support Assistant',
     voice: agent.voice || 'Adam',
-    model: agent.model || 'Standalone Edge Model (Zero API Keys)',
+    model: agent.model || 'Central Agent API',
     greeting: agent.firstMessage || agent.greeting || `Hi there! I am your AI assistant. How can I help you today?`,
-    systemPrompt: agent.prompt || agent.systemPrompt || 'You are a helpful voice assistant.',
     themeColor: agent.themeColor || '#6366f1',
     accentColor: agent.accentColor || '#06b6d4',
     position: agent.position || 'bottom-right',
     avatar: agent.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces',
-    knowledgeBase: agent.knowledgeBase || [],
-    // Live data and credentials are never embedded in downloadable client code.
-    tools: agent.tools || [],
+    apiEndpoint: `${typeof window !== 'undefined' ? window.location.origin : ''}/api/agent/query`,
     compiledAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString()
   };
@@ -45,13 +41,13 @@ export function generateStandaloneScriptContent(agent) {
   return `/**
  * Standalone AI Voice Agent Bundle: ${agentData.name}
  * Generated: ${agentData.compiledAt}
- * Architecture: 100% Free, Zero-API-Key On-Device Semantic Reasoning & Web Speech
+ * Architecture: Secure central API & Web Speech
  * Embed anywhere: <script src="./${sanitizeSlug(agentData.name)}.standalone.js"></script>
  */
 (function () {
   'use strict';
 
-  // Pre-compiled Trained Agent Intelligence (No external API keys required)
+  // Public UI configuration only. Knowledge and credentials stay on the server.
   const agentConfig = ${serializedConfig};
 
   // Deterministic Persona Voice Profiles
@@ -439,287 +435,19 @@ export function generateStandaloneScriptContent(agent) {
     return { ...resolved, lang: resolved?.voice?.lang || 'en-US' };
   }
 
-  // Keyless Local Intent & Semantic Inference Engine
-  function inferKeylessResponse(userText) {
-    const text = userText.trim();
-    const lower = text.toLowerCase();
-    const cleanWords = lower.replace(/[^a-z0-9\\s]/g, '').split(/\\s+/).filter(w => w.length > 1);
-    const stopWords = new Set(['the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'are', 'what', 'your', 'about', 'can', 'you', 'how', 'our', 'does', 'tell', 'give', 'any', 'some', 'there', 'were', 'was']);
-    const meaningfulWords = cleanWords.filter(w => !stopWords.has(w));
-
-    // Simple Stemming Helper: strips common grammatical plural/verb endings (e.g. "products" -> "product", "pricing" -> "price")
-    function stem(w) {
-      if (!w || w.length < 4) return w;
-      return w.replace(/(?:ing|ies|es|s|ed)$/, '');
-    }
-    const stemmedWords = meaningfulWords.map(stem);
-
-    const kb = agentConfig.knowledgeBase || [];
-
-    // Helper: Find first KB entry matching regex on question
-    function findKb(regex) {
-      return kb.find(k => regex.test(k.q || ''));
-    }
-
-    // Marathi Conversational Queries
-    if (/(नमस्कार|कसे आहात|काय चाललंय|हाय|हॅलो|शुभ सकाळ|शुभ संध्याकाळ)\b/i.test(text) || /\b(kasa ahes|kase ahat|namaskar)\b/i.test(lower)) {
-      return "नमस्कार! मी " + agentConfig.name + " आहे, आपला व्हॉइस असिस्टंट. मी आपल्याला कशी मदत करू शकतो?";
-    }
-    if (/(तुम्ही कोण आहात|तुमचे नाव काय|ओळख द्या)\b/i.test(text) || /\b(tumhi kon ahat)\b/i.test(lower)) {
-      return "मी " + agentConfig.name + " आहे, या वेबसाइटचा अधिकृत एआय व्हॉइस असिस्टंट.";
-    }
-    if (/(तुम्ही काय करू शकता|मदत करा|सेवा|वैशिष्ट्ये)\b/i.test(text) || /\b(tumhi kay karu shakta|madat kara)\b/i.test(lower)) {
-      return "मी आपल्या सर्व शंकांचे निरसन करू शकतो आणि आमच्या सेवांबद्दल माहिती देऊ शकतो. आपल्याला काय जाणून घ्यायचे आहे?";
-    }
-    if (/(धन्यवाद|आभार|खूप छान)\b/i.test(text) || /\b(dhanyavad|dhanyavaad|aabhar)\b/i.test(lower)) {
-      return "आपले मनःपूर्वक स्वागत आहे! मी आपल्याला आणखी काही मदत करू शकतो का?";
-    }
-    if (/(अलविदा|बाय|पुन्हा भेटू|काळजी घ्या)\b/i.test(text)) {
-      return "धन्यवाद! काळजी घ्या आणि आपला दिवस चांगला जावो.";
-    }
-
-    // Hindi Conversational Queries
-    if (/(नमस्ते|प्रणाम|हेलो|हाय|कैसे हो|क्या हाल है|शुभ प्रभात)\b/i.test(text) || /\b(namaste|kaise ho|kya haal)\b/i.test(lower)) {
-      return "नमस्ते! मैं " + agentConfig.name + " हूँ, आपका एआई वॉइस गाइड। मैं आज आपकी क्या सहायता कर सकता हूँ?";
-    }
-    if (/(आप कौन हैं|तुम्हारा नाम क्या|अपना परिचय)\b/i.test(text) || /\b(aap kaun hain)\b/i.test(lower)) {
-      return "मैं " + agentConfig.name + " हूँ, आपकी वेबसाइट का आधिकारिक एआई वॉइस गाइड।";
-    }
-    if (/(आप क्या कर सकते हैं|मदद करो|सुविधाएं|सेवाएं)\b/i.test(text) || /\b(aap kya kar sakte hain|madad karo)\b/i.test(lower)) {
-      return "मैं आपको हमारी सेवाओं, उत्पादों और जानकारी के बारे में विस्तृत सहायता प्रदान कर सकता हूँ। आप क्या जानना चाहते हैं?";
-    }
-    if (/(धन्यवाद|शुक्रिया|बहुत अच्छा)\b/i.test(text) || /\b(dhanyawad|shukriya)\b/i.test(lower)) {
-      return "आपका बहुत-बहुत स्वागत है! क्या मैं आपकी किसी अन्य चीज़ में सहायता कर सकता हूँ?";
-    }
-    if (/(अलविदा|बाय|फिर मिलेंगे)\b/i.test(text)) {
-      return "धन्यवाद! आपका दिन शुभ हो, फिर मिलेंगे।";
-    }
-
-    // 1. Common Conversational Greetings
-    if (/^(hi|hello|hey|good\\s(morning|afternoon|evening)|howdy)\\b/i.test(lower)) {
-      return agentConfig.greeting || ("Hello! I am " + agentConfig.name + ", your " + agentConfig.role + ". How can I help you today?");
-    }
-
-    // 2. Identity & Role Inquiries
-    if (/\\b(who are you|what is your name|what do you do|introduce yourself)\\b/i.test(lower)) {
-      const topicSamples = kb.slice(0, 3).map(k => k.q.replace(/^(?:what is|what are|tell me about)\\s+/i, '').replace(/\\?$/, '')).filter(Boolean).join(', ');
-      return "I am " + agentConfig.name + ", an AI voice assistant trained as a " + agentConfig.role + ". I operate right here on your browser with zero external servers. " + (topicSamples ? ("You can ask me about: " + topicSamples + ".") : "How can I assist you today?");
-    }
-
-    // 3. Website Purpose / Subject / Main Point Inquiries
-    if (/\\b(main point|subject of this website|what is this website|about this website|about the website|what does this website do|what is this company|what does this company do|what site is this|purpose of this website)\\b/i.test(lower)) {
-      const aboutEntry = findKb(/\\b(about|subject|purpose|what is this website|main point)\\b/i);
-      if (aboutEntry && aboutEntry.a && !aboutEntry.a.includes('[')) {
-        return aboutEntry.a;
-      }
-      if (agentConfig.systemPrompt) {
-        const lines = agentConfig.systemPrompt.split(/[\\r\\n]+/);
-        for (const line of lines) {
-          const l = line.trim();
-          if (l.length > 20 && !l.startsWith('#') && !l.includes('[') && /(?:official|is a|dedicated to|experience|features|atelier|platform|service|provides)/i.test(l)) {
-            return l.replace(/^[*•\\-\\d.\\s#]+/, '').trim();
-          }
-        }
-      }
-      return "This website is the official online portal for " + agentConfig.name + ", offering interactive features, product specifications, and customer assistance.";
-    }
-
-    // 4. Products / Models / Fleet / Catalog Inquiries
-    if (/\\b(what products|list products|what do you sell|all products|available products|show products|what models|what cars|what services|offerings|catalog|product list|items)\\b/i.test(lower) || (stemmedWords.includes('product') && stemmedWords.length <= 3)) {
-      // Check if a specific catalog/products entry exists in the KB
-      const productEntry = findKb(/\\b(what products|models do you offer|products are on this website|catalog|services do you offer)\\b/i);
-      if (productEntry && productEntry.a && !productEntry.a.includes('[')) {
-        return productEntry.a;
-      }
-      // Generate dynamically from all KB questions that describe products/features
-      const productTitles = kb
-        .map(k => k.q.replace(/^(?:what is|what are|tell me about)\\s+/i, '').replace(/\\?$/, '').trim())
-        .filter(t => t.length > 2 && !/^(?:this website|main point|contact|support|hours|pricing|how to|why)/i.test(t));
-      if (productTitles.length > 0) {
-        return "Our flagship products and offerings include: " + productTitles.slice(0, 6).join(', ') + ". Which would you like to explore in detail?";
-      }
-    }
-
-    // 5. Capabilities & General Help Inquiries
-    if (/\\b(what can you do|help me|features|services|capabilities|options)\\b/i.test(lower)) {
-      const topics = kb.slice(0, 4).map(k => k.q.replace(/^(?:what is|what are)\\s+/i, '').replace(/\\?$/, '')).filter(Boolean);
-      const tools = (agentConfig.tools || []).map(t => t.name).filter(Boolean);
-      let reply = "I can guide you through everything on this website. ";
-      if (topics.length > 0) {
-        reply += "I can provide details on " + topics.join(', ') + ". ";
-      }
-      if (tools.length > 0) {
-        reply += "I can also perform actions like " + tools.join(', ') + ". ";
-      }
-      reply += "What would you like to know?";
-      return reply;
-    }
-
-    // 6. Gratitude & Farewells
-    if (/\\b(thank you|thanks|appreciate it)\\b/i.test(lower)) {
-      return "You're very welcome! Let me know if there's anything else I can help you with.";
-    }
-    if (/\\b(bye|goodbye|see you|have a good day)\\b/i.test(lower)) {
-      return "Goodbye! Have a great day, and feel free to talk to me anytime you visit.";
-    }
-
-    // Prompt Injection Defense
-    if (/\\b(ignore (all )?previous instructions|system prompt|developer mode|jailbreak|reveal (your )?prompt|override instructions)\\b/i.test(lower)) {
-      return "I am configured as a secure assistant and cannot reveal internal system instructions or bypass security guidelines.";
-    }
-
-    // Dynamic Database Query Execution (Offline Edge Schema & Record Reasoning)
-    const db = Array.isArray(agentConfig.database) ? agentConfig.database : [];
-    if (db.length > 0) {
-      // 1. Record Count Queries
-      if (/\\b(how many|total|count|kitne|kiti|sankhya)\\b/i.test(lower) && /\\b(items|products|courses|orders|records|medicines|available|catalog|stock)\\b/i.test(lower)) {
-        return "We currently have " + db.length + " verified items available in our database.";
-      }
-
-      // 2. Exact or Key Token Lookup in DB
-      let matchedRecord = null;
-      let matchedField = null;
-      for (const rec of db) {
-        const rName = (rec.name || rec.title || rec.product_name || rec.item_name || rec.code || '').toLowerCase();
-        if (rName && (lower.includes(rName) || rName.split(/\\s+/).filter(w => w.length > 3).some(w => lower.includes(w)))) {
-          matchedRecord = rec;
-          break;
-        }
-      }
-
-      // 3. Order ID / Reference Lookups
-      if (!matchedRecord) {
-        const idMatch = lower.match(/\\b(?:order|id|ticket|invoice|ref|#)\\s*([a-z0-9_-]+)\\b/i);
-        if (idMatch && idMatch[1]) {
-          const searchId = idMatch[1].toLowerCase();
-          matchedRecord = db.find(r => String(r.id || r.order_id || r.orderNumber || r.ticket_id || '').toLowerCase() === searchId);
-          if (matchedRecord) matchedField = 'order_status';
-        }
-      }
-
-      if (matchedRecord) {
-        const recTitle = matchedRecord.name || matchedRecord.title || matchedRecord.product_name || ("Item #" + (matchedRecord.id || ''));
-        // Price query
-        if (/\\b(price|cost|fee|fees|rate|how much|dar|kimat|shulk)\\b/i.test(lower)) {
-          const priceVal = matchedRecord.price || matchedRecord.fee || matchedRecord.cost || matchedRecord.annual_fee || null;
-          if (priceVal !== null && priceVal !== undefined) {
-            return "The price for " + recTitle + " is " + priceVal + ".";
-          }
-        }
-        // Stock / Availability query
-        if (/\\b(stock|available|seats|availability|shillak|baki|quantity)\\b/i.test(lower)) {
-          const stockVal = matchedRecord.stock !== undefined ? matchedRecord.stock : (matchedRecord.seats !== undefined ? matchedRecord.seats : matchedRecord.quantity);
-          if (stockVal !== null && stockVal !== undefined) {
-            return "For " + recTitle + ", we currently have " + stockVal + " available.";
-          }
-        }
-        // Status query
-        if (matchedField === 'order_status' || /\\b(status|tracking|shipped|delivered|state)\\b/i.test(lower)) {
-          const statusVal = matchedRecord.status || matchedRecord.delivery_status || matchedRecord.state || 'Processing';
-          return "Status for " + recTitle + ": " + statusVal + ".";
-        }
-        // General record inquiry
-        if (matchedRecord.description) {
-          return recTitle + ": " + matchedRecord.description;
-        }
-      }
-    }
-
-    // 7. Multi-Stage Semantic Knowledge Base Matching (Exact + Token + Stemmed Overlap)
-    let bestItem = null;
-    let highestScore = 0;
-
-    for (const item of kb) {
-      const qLower = (item.q || '').toLowerCase();
-      const aLower = (item.a || '').toLowerCase();
-      if (aLower.includes('[')) continue; // Ignore placeholder items!
-      let score = 0;
-
-      // Exact phrase match
-      if (lower.includes(qLower) || qLower.includes(lower)) {
-        score += 80;
-      }
-
-      // Keyword token overlap (both exact and stemmed)
-      let matchCount = 0;
-      for (let i = 0; i < meaningfulWords.length; i++) {
-        const rawW = meaningfulWords[i];
-        const stemW = stemmedWords[i];
-
-        if (qLower.includes(rawW)) {
-          score += 25;
-          matchCount++;
-        } else if (stemW && qLower.includes(stemW)) {
-          score += 18;
-          matchCount++;
-        }
-
-        if (aLower.includes(rawW)) score += 6;
-        else if (stemW && aLower.includes(stemW)) score += 4;
-      }
-
-      // Require meaningful match density to avoid unrelated fallbacks
-      if (score > highestScore && (score >= 40 || (matchCount >= 2 && score >= 35) || lower.includes(qLower))) {
-        highestScore = score;
-        bestItem = item;
-      }
-    }
-
-    if (bestItem) {
-      return bestItem.a;
-    }
-
-    // 8. Backend Action Tool Intent Matching (Action triggers, forms, webhooks)
-    const tools = agentConfig.tools || [];
-    const hasActionVerb = /\\b(trigger|execute|run|book|schedule|reserve|order|submit|send|call|lookup|check|api)\\b/i.test(lower);
-    for (const tool of tools) {
-      const tName = (tool.name || '').toLowerCase();
-      const tDesc = (tool.description || '').toLowerCase();
-      if ((tName && lower.includes(tName)) || (hasActionVerb && tDesc && meaningfulWords.some(w => tDesc.includes(w)))) {
-        return "I can help you with " + (tool.name || "this action") + ". " + (tool.description || "") + ". Please let me know the details so I can proceed.";
-      }
-    }
-
-    // 9. System Prompt & Grounded Fact Matching
-    if (agentConfig.systemPrompt) {
-      const lines = agentConfig.systemPrompt.split(/[\\r\\n]+/);
-      let bestLine = '';
-      let bestLineScore = 0;
-      for (const rawLine of lines) {
-        const line = rawLine.trim();
-        if (line.length < 12 || line.startsWith('#') || line.includes('[')) continue;
-        const lineLower = line.toLowerCase();
-        let lScore = 0;
-        for (let i = 0; i < meaningfulWords.length; i++) {
-          const rawW = meaningfulWords[i];
-          const stemW = stemmedWords[i];
-          if (lineLower.includes(rawW)) lScore += 10;
-          else if (stemW && lineLower.includes(stemW)) lScore += 7;
-        }
-        if (lScore > bestLineScore) {
-          bestLineScore = lScore;
-          bestLine = line;
-        }
-      }
-      if (bestLine && bestLineScore >= 14) {
-        return bestLine.replace(/^[*•\\-\\d.\\s#]+/, '').trim();
-      }
-    }
-
-    // 10. Natural Concierge Fallback (Warm, Helpful, and Suggestive)
-    const topicHighlights = kb
-      .map(k => k.q.replace(/^(?:what is|what are|tell me about)\\s+/i, '').replace(/\\?$/, '').trim())
-      .filter(t => t.length > 2 && !/^(?:this website|main point|contact|support|hours|pricing)/i.test(t));
-    const sampleTopics = topicHighlights.slice(0, 3);
-
-    if (sampleTopics.length > 0) {
-      return "I'm " + agentConfig.name + ". While I don't have the specific answer for \\"" + text + "\\", I can tell you all about our " + sampleTopics.join(', ') + ". Which would you like to explore?";
-    }
-
-    return "I'm " + agentConfig.name + ", your assistant for this website. Please feel free to ask about our products, specifications, or services!";
+  async function requestCentralResponse(userText) {
+    const key = 'echo_agent_session_' + encodeURIComponent(agentConfig.id);
+    const conversationId = localStorage.getItem(key) || (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()));
+    localStorage.setItem(key, conversationId);
+    const response = await fetch(agentConfig.apiEndpoint, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ agentId: agentConfig.id, conversationId, message: userText }),
+      signal: AbortSignal.timeout(25000)
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.reply) throw new Error(payload.error || 'Secure agent service is unavailable');
+    return payload.reply;
   }
-
-  // Inject Shadow DOM Widget
   function initWidget() {
     if (document.getElementById('voice-helpdesk-root')) return;
 
@@ -1017,7 +745,7 @@ export function generateStandaloneScriptContent(agent) {
         </form>
         <div class="vhd-brand">
           <span class="vhd-brand-dot"></span>
-          <span>Zero API Keys · Browser Native Intelligence</span>
+          <span>Secure Central Agent</span>
         </div>
       </div>
     \`;
@@ -1155,7 +883,7 @@ export function generateStandaloneScriptContent(agent) {
     window.addEventListener('beforeunload', () => saveDeviceConv());
 
     // Process Message through Autonomous Keyless Engine
-    function handleUserMessage(userText, opts = {}) {
+    async function handleUserMessage(userText, opts = {}) {
       const isVoiceTurn = opts?.source === 'voice';
       cancelAutoResume();
       lastInputWasVoice = isVoiceTurn;
@@ -1172,12 +900,15 @@ export function generateStandaloneScriptContent(agent) {
 
       const shouldAutoListen = isVoiceTurn && !isFarewellText(userText);
 
-      // 100% On-device, keyless inference
-      const reply = inferKeylessResponse(userText);
-      setTimeout(() => {
+      try {
+        const reply = await requestCentralResponse(userText);
         appendMsg(reply, 'agent');
         speakReply(reply, { shouldAutoListen });
-      }, 100);
+      } catch (error) {
+        const message = 'The secure agent service could not answer right now. Please try again.';
+        appendMsg(message, 'agent');
+        speakReply(message, { shouldAutoListen: false });
+      }
     }
 
     form.addEventListener('submit', (e) => {
@@ -1558,7 +1289,7 @@ export function generateDemoHtml(agent, scriptName) {
     </div>
   </div>
 
-  <!-- Standalone Agent Script (Zero Dependencies, Zero API Keys) -->
+  <!-- Standalone agent client; answers are served by the secure central API. -->
   <script src="./${scriptName}"></script>
 </body>
 </html>`;
@@ -1577,8 +1308,8 @@ export function generateReadme(agent, scriptName) {
 
 **Role:** ${role}  
 **Locked Voice:** ${voice}  
-**Architecture:** 100% Free & Keyless On-Device Reasoning Engine  
-**Storage Policy:** Cloud snapshot auto-expires after 15 days (${expiryDate}), but this downloaded package is yours permanently and runs offline indefinitely.
+**Architecture:** Secure central agent API with browser-native voice playback
+**Storage Policy:** The client contains public presentation settings only. Knowledge and credentials remain server-side.
 
 ---
 
@@ -1621,10 +1352,10 @@ export default function RootLayout({ children }) {
 
 ---
 
-## 🔒 Zero API Keys & Privacy Guarantee
-- This agent does **NOT** require OpenAI, Gemini, or Groq API keys.
-- Operates using pre-compiled semantic intent recognition and the browser's native Web Speech API.
-- 100% free with $0 server hosting bills.
+## 🔒 Secure API
+- The generated client contains no provider keys, database records, schemas, or private knowledge.
+- All answers are routed through the configured secure agent API.
+- The browser's native speech API is used for voice playback.
 `;
 }
 
@@ -1641,30 +1372,28 @@ export async function downloadAgentBundleZip(rawAgent) {
   const htmlContent = generateDemoHtml(agent, scriptName);
   const readmeContent = generateReadme(agent, scriptName);
   const modelJson = JSON.stringify({
-    ...agent,
+    id: agent.widgetId || agent.id || agent.agentId || agent.name,
+    name: agent.name || 'AI Voice Agent',
+    role: agent.role || 'Customer Support Assistant',
     voice: agent.voice || 'Adam',
-    voiceArchitecture: 'Pre-Baked Audio & Deterministic Neural Lock',
+    greeting: agent.firstMessage || agent.greeting || 'Welcome!',
+    themeColor: agent.themeColor || '#6366f1',
+    accentColor: agent.accentColor || '#06b6d4',
+    position: agent.position || 'bottom-right',
+    voiceArchitecture: 'Secure central API with browser speech playback',
     exportedAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString(),
-    runtime: 'zero-api-key-standalone'
+    runtime: 'secure-central-api'
   }, null, 2);
 
   // Pre-baked voice studio configuration
   const audioManifest = {
     agentName: agent.name || 'AI Voice Agent',
     voice: agent.voice || 'Adam',
-    voiceEngine: 'Pre-Baked Audio & Deterministic Neural Lock',
+    voiceEngine: 'Browser speech playback',
     greeting: agent.firstMessage || agent.greeting || 'Welcome!',
-    knowledgeAudioTrackCount: (agent.knowledgeBase || []).length,
-    tracks: [
-      { id: 'greeting', label: 'Welcome Greeting', file: 'audio/greeting.mp3' },
-      ...(agent.knowledgeBase || []).map((item, idx) => ({
-        id: `faq_${idx + 1}`,
-        question: item.question || item.q || '',
-        answer: item.answer || item.a || '',
-        file: `audio/faq_${idx + 1}.mp3`
-      }))
-    ]
+    knowledgeAudioTrackCount: 0,
+    tracks: []
   };
 
   zip.file(scriptName, scriptContent);

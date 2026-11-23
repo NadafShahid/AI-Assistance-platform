@@ -14,6 +14,7 @@
 
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { getEmbeddingProvider } from './embeddingProvider.js';
+import { createHash } from 'node:crypto';
 
 // Configuration strictly read from environment or runtime options (never hardcoded)
 const DEFAULT_COLLECTION = 'echo_agent_vectors';
@@ -27,10 +28,11 @@ const localQdrantStore = new Map(); // collectionName -> Map of points
  */
 export function getQdrantClient(options = {}) {
   const url = options.url ||
-    (typeof process !== 'undefined' && process.env ? (process.env.QDRANT_URL || process.env.VITE_QDRANT_URL) : '') ||
-    'http://localhost:6333';
+    (typeof process !== 'undefined' && process.env ? process.env.QDRANT_URL : '') || '';
   const apiKey = options.apiKey ||
-    (typeof process !== 'undefined' && process.env ? (process.env.QDRANT_API_KEY || process.env.VITE_QDRANT_API_KEY) : '');
+    (typeof process !== 'undefined' && process.env ? process.env.QDRANT_API_KEY : '');
+
+  if (!url) return null;
 
   try {
     return new QdrantClient({
@@ -108,6 +110,9 @@ export async function upsertQdrantDocuments(documents = [], options = {}) {
 
   const effectiveClient = client || getQdrantClient(options);
   const isRemote = await ensureQdrantCollection(effectiveClient, collectionName);
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'production' && (!effectiveClient || !isRemote)) {
+    throw new Error('Qdrant is not reachable; remote indexing is required in production');
+  }
 
   const vectors = await (options.embeddingProvider || getEmbeddingProvider()).embedDocuments(documents.map(doc => typeof doc === 'string' ? doc : (doc.pageContent || doc.content || doc.text || `${doc.q || ''} ${doc.a || ''}`)));
   const points = [];
@@ -118,7 +123,7 @@ export async function upsertQdrantDocuments(documents = [], options = {}) {
     const text = typeof doc === 'string' ? doc : (doc.pageContent || doc.content || doc.text || `${doc.q || ''} ${doc.a || ''}`);
     const meta = (typeof doc === 'object' && doc.metadata) ? doc.metadata : (typeof doc === 'object' ? doc : {});
 
-    const pointId = meta.chunkId || meta.id || `pt_${Date.now()}_${i}`;
+    const pointId = String(meta.chunkId || meta.id || `pt_${Date.now()}_${i}`);
     const vector = doc.vector || vectors[i];
     const docHash = meta.docHash || `hash_${i}`;
 
@@ -139,8 +144,10 @@ export async function upsertQdrantDocuments(documents = [], options = {}) {
       updatedAt: meta.updatedAt || new Date().toISOString()
     };
 
+    const uuidHex = createHash('sha256').update(`${payload.tenantId}:${payload.agentId}:${pointId}`).digest('hex').slice(0, 32);
+    const qdrantId = `${uuidHex.slice(0, 8)}-${uuidHex.slice(8, 12)}-5${uuidHex.slice(13, 16)}-a${uuidHex.slice(17, 20)}-${uuidHex.slice(20, 32)}`;
     points.push({
-      id: i + 1, // numeric ID for Qdrant compatibility
+      id: qdrantId,
       vector,
       payload
     });
@@ -167,6 +174,9 @@ export async function upsertQdrantDocuments(documents = [], options = {}) {
     }
   }
 
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'production') {
+    throw new Error('Qdrant remote indexing failed; local in-memory fallback is disabled in production');
+  }
   return { success: true, count: points.length, backend: 'qdrant_local_fallback' };
 }
 
@@ -219,6 +229,10 @@ export async function searchQdrant(queryText = '', options = {}) {
     } catch (searchErr) {
       // Fallback to local store
     }
+  }
+
+  if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'production') {
+    throw new Error('Qdrant is not configured; semantic retrieval is unavailable in production');
   }
 
   // Local fallback search with strict tenant and agent isolation

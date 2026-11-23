@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app';
+import { getStorage, ref, uploadBytesResumable, deleteObject } from 'firebase/storage';
 import { isValidCustomerCatalogName, isCustomerSafeFaq } from './utils/codebaseAnalyzer.js';
 
 function cleanDatabaseRecords(records) {
@@ -8,7 +9,10 @@ function cleanDatabaseRecords(records) {
 
 function cleanKnowledgeBase(kb) {
   if (!Array.isArray(kb)) return [];
-  return kb.filter(item => item && isCustomerSafeFaq(item.q, item.a));
+  return kb.filter(item => item && (
+    (item.visibility === 'PUBLIC' && item.sourceId && item.chunkId && item.path && typeof item.q === 'string' && typeof item.a === 'string') ||
+    isCustomerSafeFaq(item.q, item.a)
+  ));
 }
 import {
   getFirestore,
@@ -52,6 +56,29 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
+const storage = getStorage(app);
+
+export async function uploadIngestionFiles(files = []) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Sign in before uploading knowledge files');
+  if (!Array.isArray(files) || !files.length || files.length > 200) throw new Error('Select between 1 and 200 files');
+  const jobId = globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const uploaded = [];
+  try {
+    for (const file of files) {
+      if (file.size > 50 * 1024 * 1024) throw new Error(`${file.name} exceeds the 50 MB file limit`);
+      const safeName = String(file.name || 'upload').split(/[\\/]/).pop().replace(/[^a-zA-Z0-9._ -]/g, '_').slice(0, 180);
+      const path = `staging/${user.uid}/${jobId}/${safeName}`;
+      const uploadTask = uploadBytesResumable(ref(storage, path), file, { contentType: file.type || 'application/octet-stream', customMetadata: { ownerUid: user.uid, jobId } });
+      await new Promise((resolve, reject) => uploadTask.on('state_changed', undefined, reject, resolve));
+      uploaded.push({ name: safeName, path, size: file.size, mimeType: file.type || 'application/octet-stream' });
+    }
+  } catch (error) {
+    await Promise.all(uploaded.map(file => deleteObject(ref(storage, file.path)).catch(() => {})));
+    throw error;
+  }
+  return { jobId, files: uploaded, idToken: await user.getIdToken() };
+}
 
 // Authentication Helpers & Session Persistence
 const USER_SESSION_KEY = 'echo_user_session';
@@ -159,6 +186,20 @@ export const AGENT_INFO_COLLECTION = 'agent_info';
 export const USER_INFO_COLLECTION = 'user_info';
 export const CONVERSATIONS_COLLECTION = 'conversations';
 
+async function agentApiRequest(method, path = '', body = undefined) {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Sign in to access agents');
+  const idToken = await user.getIdToken();
+  const response = await fetch(`/api/agent/manage${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Secure agent service is unavailable');
+  return data;
+}
+
 /**
 /**
  * Helper to ensure human-readable database titles without any encrypted/hash IDs
@@ -181,26 +222,8 @@ export function getCleanTitleId(nameOrAgent) {
  */
 export async function getAgents() {
   try {
-    const q = query(collection(db, AGENTS_COLLECTION), orderBy('updatedAt', 'desc'));
-    const snapshot = await getDocs(q);
-    const seen = new Set();
-    const agents = [];
-    for (const d of snapshot.docs) {
-      const data = d.data();
-      const titleId = getCleanTitleId(data.name || d.id);
-      if (!seen.has(titleId.toLowerCase())) {
-        seen.add(titleId.toLowerCase());
-        agents.push({
-          id: titleId,
-          _firestoreDocId: d.id,
-          ...data,
-          name: data.name || titleId,
-          databaseRecords: cleanDatabaseRecords(data.databaseRecords),
-          knowledgeBase: cleanKnowledgeBase(data.knowledgeBase)
-        });
-      }
-    }
-    return agents;
+    const response = await agentApiRequest('GET');
+    return Array.isArray(response.agents) ? response.agents : [];
   } catch (error) {
     console.warn("Could not fetch agents from Firestore, falling back:", error);
     return [];
@@ -211,34 +234,15 @@ export async function getAgents() {
  * Real-time subscription to agents
  */
 export function subscribeToAgents(callback) {
-  try {
-    const q = query(collection(db, AGENTS_COLLECTION), orderBy('updatedAt', 'desc'));
-    return onSnapshot(q, (snapshot) => {
-      const seen = new Set();
-      const agents = [];
-      for (const d of snapshot.docs) {
-        const data = d.data();
-        const titleId = getCleanTitleId(data.name || d.id);
-        if (!seen.has(titleId.toLowerCase())) {
-          seen.add(titleId.toLowerCase());
-          agents.push({
-            id: titleId,
-            _firestoreDocId: d.id,
-            ...data,
-            name: data.name || titleId,
-            databaseRecords: cleanDatabaseRecords(data.databaseRecords),
-            knowledgeBase: cleanKnowledgeBase(data.knowledgeBase)
-          });
-        }
-      }
-      callback(agents);
-    }, (error) => {
-      console.warn("Firestore subscription error:", error);
-    });
-  } catch (error) {
-    console.warn("Failed to subscribe to agents:", error);
-    return () => {};
-  }
+  let active = true;
+  let timer;
+  const refresh = async () => {
+    try { const agents = await getAgents(); if (active) callback(agents); }
+    catch (error) { console.warn('Secure agent subscription error:', error); }
+    if (active) timer = setTimeout(refresh, 10000);
+  };
+  refresh();
+  return () => { active = false; if (timer) clearTimeout(timer); };
 }
 
 /**
@@ -246,43 +250,13 @@ export function subscribeToAgents(callback) {
  */
 export async function getAgentById(agentId) {
   const titleId = getCleanTitleId(agentId);
-  const cacheKey = `agent_cache_${titleId}`;
   try {
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-      const { data, timestamp } = JSON.parse(cached);
-      if (Date.now() - timestamp < 30 * 60 * 1000) {
-        return data;
-      }
-    }
-  } catch (e) {}
-
-  // 1. Try clean title ID
-  let docRef = doc(db, AGENTS_COLLECTION, titleId);
-  let snap = await getDoc(docRef);
-
-  // 2. Fallback to raw ID if different
-  if (!snap.exists() && agentId !== titleId) {
-    docRef = doc(db, AGENTS_COLLECTION, agentId);
-    snap = await getDoc(docRef);
+    const response = await agentApiRequest('GET', `?agentId=${encodeURIComponent(titleId)}`);
+    return response.agent || null;
+  } catch (error) {
+    if (/not found/i.test(error.message || '')) return null;
+    throw error;
   }
-
-  if (!snap.exists()) return null;
-
-  const rawSnapData = snap.data();
-  const data = {
-    id: titleId,
-    _firestoreDocId: snap.id,
-    ...rawSnapData,
-    name: rawSnapData.name || titleId,
-    databaseRecords: cleanDatabaseRecords(rawSnapData.databaseRecords),
-    knowledgeBase: cleanKnowledgeBase(rawSnapData.knowledgeBase)
-  };
-  try {
-    localStorage.setItem(cacheKey, JSON.stringify({ data, timestamp: Date.now() }));
-  } catch (e) {}
-
-  return data;
 }
 
 /**
@@ -314,10 +288,6 @@ export async function saveAgent(agent, options = {}) {
   const titleId = getCleanTitleId(agent.name || agent.title || agent.id);
   const tenantId = agent.tenantId || agent.ownerId || auth.currentUser?.uid;
   if (!tenantId) throw new Error('An authenticated tenant is required to save an agent');
-  const agentRef = doc(db, AGENTS_COLLECTION, titleId);
-  const agentInfoRef = doc(db, AGENT_INFO_COLLECTION, titleId);
-  const publicAgentRef = doc(db, 'public_agents', titleId);
-  const privateAgentRef = doc(db, 'private_agents', titleId);
 
   // Collect all previous IDs / names that differ from the new titleId so old docs are ALWAYS deleted on rename
   const prevIdsToPurge = new Set();
@@ -357,6 +327,7 @@ export async function saveAgent(agent, options = {}) {
   // Strip internal transient helper fields before persisting to Firestore
   const { _previousId, _previousName, _firestoreDocId, ...cleanAgentFields } = agent || {};
 
+  const savedAt = new Date().toISOString();
   const rawPayload = {
     ...cleanAgentFields,
     tenantId,
@@ -371,66 +342,24 @@ export async function saveAgent(agent, options = {}) {
     status: agent.status || 'Active',
     totalKnowledgeEntries: kbCount,
     totalDatabaseRecords: dbCount,
-    lastActiveAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    createdAt: agent.createdAt || serverTimestamp(),
+    lastActiveAt: savedAt,
+    updatedAt: savedAt,
+    createdAt: agent.createdAt || savedAt,
   };
 
   const payload = sanitizeForFirestore(rawPayload);
-  const publicPayload = sanitizeForFirestore({
-    agentId: titleId,
-    name: payload.name,
-    greeting: payload.greeting || '',
-    avatar: payload.avatar || '',
-    themeColor: payload.themeColor || '#6366f1',
-    accentColor: payload.accentColor || '#06b6d4',
-    position: payload.position || 'bottom-right',
-    voice: payload.voice || 'Adam',
-    navigation: payload.publicNavigation || [],
-    allowedOrigins: Array.isArray(payload.allowedOrigins) ? payload.allowedOrigins : [],
-    status: payload.status,
-    isDeleted: Boolean(payload.isDeleted),
-    updatedAt: serverTimestamp()
-  });
-  const privatePayload = sanitizeForFirestore({
-    ...payload,
-    tenantId,
-    agentId: titleId,
-    publicKnowledgeBase: sanitizedKb,
-    publicFieldAllowlist: payload.publicFieldAllowlist || {}
-  });
-
-  // Keep editor documents synchronized and maintain distinct API-facing public/private configs.
-  await Promise.all([
-    setDoc(agentRef, payload, { merge: true }),
-    setDoc(agentInfoRef, payload, { merge: true }),
-    setDoc(publicAgentRef, publicPayload, { merge: true }),
-    setDoc(privateAgentRef, privatePayload, { merge: true })
-  ]);
-
-  // 2. AWAIT purging ALL old document IDs when renaming so subscribeToAgents NEVER shows a duplicate!
-  if (prevIdsToPurge.size > 0) {
-    const purgePromises = [];
-    for (const oldDocId of prevIdsToPurge) {
-      purgePromises.push(deleteDoc(doc(db, AGENTS_COLLECTION, oldDocId)).catch(() => {}));
-      purgePromises.push(deleteDoc(doc(db, AGENT_INFO_COLLECTION, oldDocId)).catch(() => {}));
-      try {
-        localStorage.removeItem(`agent_cache_${oldDocId}`);
-      } catch (_) {}
-    }
-    await Promise.all(purgePromises);
-  }
+  const previousId = options?.previousId || options?.previousDocId || Array.from(prevIdsToPurge)[0] || '';
+  const saved = await agentApiRequest('POST', '', { agent: payload, previousId });
 
   // 3. Clean cache and any stale tombstone for the active agent ID
   try {
     localStorage.removeItem(`agent_cache_${titleId}`);
-    deleteDoc(doc(db, 'deleted_agents', titleId)).catch(() => {});
     if (typeof window !== 'undefined') {
       localStorage.removeItem(`vhd_deleted_${titleId.toLowerCase().replace(/\s+/g, '_')}`);
     }
   } catch (e) {}
 
-  return { id: titleId, _firestoreDocId: titleId, ...payload };
+  return { ...(saved.agent || payload), id: titleId, _firestoreDocId: titleId };
 }
 
 /**
@@ -441,13 +370,8 @@ export async function patchAgentUploadedFiles(agentNameOrId, updatesMap = {}) {
   try {
     const titleId = getCleanTitleId(agentNameOrId);
     if (!titleId || !updatesMap || Object.keys(updatesMap).length === 0) return false;
-
-    const agentRef = doc(db, AGENTS_COLLECTION, titleId);
-    const agentInfoRef = doc(db, AGENT_INFO_COLLECTION, titleId);
-    const snap = await getDoc(agentRef);
-    if (!snap.exists()) return false;
-
-    const existingFiles = Array.isArray(snap.data()?.uploadedFiles) ? snap.data().uploadedFiles : [];
+    const existingAgent = await getAgentById(titleId);
+    const existingFiles = Array.isArray(existingAgent?.uploadedFiles) ? existingAgent.uploadedFiles : [];
     if (existingFiles.length === 0) return false;
 
     let changed = false;
@@ -460,15 +384,7 @@ export async function patchAgentUploadedFiles(agentNameOrId, updatesMap = {}) {
 
     if (!changed) return false;
 
-    const patchPayload = sanitizeForFirestore({
-      uploadedFiles: mergedFiles,
-      updatedAt: serverTimestamp()
-    });
-
-    await Promise.all([
-      setDoc(agentRef, patchPayload, { merge: true }),
-      setDoc(agentInfoRef, patchPayload, { merge: true })
-    ]);
+    await agentApiRequest('PATCH', '', { agentId: titleId, updates: { uploadedFiles: mergedFiles } });
 
     try {
       localStorage.removeItem(`agent_cache_${titleId}`);
@@ -489,21 +405,8 @@ export async function getAgentUploadedFilesFromCloud(nameOrId) {
     const rawId = typeof nameOrId === 'string' ? nameOrId : (nameOrId?.id || nameOrId?.name || '');
     const titleId = getCleanTitleId(rawId);
     const candidates = Array.from(new Set([titleId, rawId, nameOrId?.name ? getCleanTitleId(nameOrId.name) : ''].filter(Boolean)));
-    const collected = [];
-    const seen = new Set();
-    for (const cid of candidates) {
-      const snap = await getDoc(doc(db, AGENTS_COLLECTION, cid)).catch(() => null);
-      if (snap && snap.exists() && Array.isArray(snap.data()?.uploadedFiles)) {
-        for (const f of snap.data().uploadedFiles) {
-          const key = f?.driveFileId || f?.id || f?.name;
-          if (key && !seen.has(key)) {
-            seen.add(key);
-            collected.push(f);
-          }
-        }
-      }
-    }
-    return collected;
+    const agent = await getAgentById(candidates[0]);
+    return Array.isArray(agent?.uploadedFiles) ? agent.uploadedFiles : [];
   } catch (_) {
     return [];
   }
@@ -528,39 +431,7 @@ export async function deleteAgent(nameOrId) {
     });
   }
 
-  // 1. Delete all matching docs from agents and agent_info collections
-  const delPromises = [];
-  for (const cid of allDocIds) {
-    delPromises.push(deleteDoc(doc(db, AGENTS_COLLECTION, cid)).catch(() => {}));
-    delPromises.push(deleteDoc(doc(db, AGENT_INFO_COLLECTION, cid)).catch(() => {}));
-  }
-  await Promise.all(delPromises);
-
-  // 2. Mark in deleted_agents tombstone collection so any embedded widgets immediately deactivate
-  try {
-    await setDoc(doc(db, 'deleted_agents', titleId), {
-      id: titleId,
-      name: agentObj.name || titleId,
-      isDeleted: true,
-      deletedAt: serverTimestamp()
-    });
-    if (rawId && rawId !== titleId) {
-      await setDoc(doc(db, 'deleted_agents', rawId), {
-        id: rawId,
-        isDeleted: true,
-        deletedAt: serverTimestamp()
-      }).catch(() => {});
-    }
-    if (nameId && nameId !== titleId && nameId !== rawId) {
-      await setDoc(doc(db, 'deleted_agents', nameId), {
-        id: nameId,
-        isDeleted: true,
-        deletedAt: serverTimestamp()
-      }).catch(() => {});
-    }
-  } catch (e) {
-    console.warn("Could not write deleted_agents tombstone:", e);
-  }
+  await agentApiRequest('DELETE', `?agentId=${encodeURIComponent(titleId)}`);
 
   // 3. Delete corresponding conversation
   await deleteDoc(doc(db, CONVERSATIONS_COLLECTION, titleId)).catch(() => {});
@@ -587,19 +458,13 @@ export async function deleteAgent(nameOrId) {
  */
 export async function deleteAllAgentsAndData() {
   try {
-    // 1. Mark in deleted_agents tombstone, then delete from Firestore
-    const agentsSnapshot = await getDocs(collection(db, AGENTS_COLLECTION));
-    for (const d of agentsSnapshot.docs) {
-      await setDoc(doc(db, 'deleted_agents', d.id), {
-        id: d.id,
-        isDeleted: true,
-        deletedAt: serverTimestamp()
-      }).catch(() => {});
-      await deleteDoc(d.ref).catch(() => {});
-    }
+    const agents = await getAgents();
+    for (const agent of agents) await deleteAgent(agent).catch(() => {});
 
     // 2. Delete all conversation history documents
-    const convSnapshot = await getDocs(collection(db, CONVERSATIONS_COLLECTION));
+    const ownerId = auth.currentUser?.uid;
+    if (!ownerId) throw new Error('Sign in to delete workspace data');
+    const convSnapshot = await getDocs(query(collection(db, CONVERSATIONS_COLLECTION), where('ownerId', '==', ownerId)));
     for (const d of convSnapshot.docs) {
       await deleteDoc(d.ref).catch(() => {});
     }
@@ -693,6 +558,7 @@ export async function saveConversationSession(conversation) {
 
   const updatedPayload = {
     id: agentTitle,
+    ownerId: auth.currentUser?.uid || '',
     agentName: agentTitle,
     agentTitle: agentTitle,
     title: `${agentTitle} - Overall Conversation`,
@@ -745,6 +611,7 @@ export async function saveConversationSession(conversation) {
     const userDocRef = doc(db, USER_INFO_COLLECTION, `${agentTitle}_${cleanVisitorId}`);
     setDoc(userDocRef, {
       id: `${agentTitle}_${cleanVisitorId}`,
+      ownerId: auth.currentUser?.uid || '',
       visitorId: rawCaller,
       caller: rawCaller,
       name: conversation.userName || rawCaller,
@@ -779,6 +646,7 @@ export async function saveVisitorUserInfo(visitorData) {
   const payload = sanitizeForFirestore({
     ...visitorData,
     id: cleanId,
+    ownerId: auth.currentUser?.uid || '',
     lastActiveAt: serverTimestamp()
   });
   await setDoc(userRef, payload, { merge: true }).catch(() => {});
@@ -789,7 +657,9 @@ export async function saveVisitorUserInfo(visitorData) {
  */
 export async function getUserInfoList() {
   try {
-    const snap = await getDocs(collection(db, USER_INFO_COLLECTION));
+    const ownerId = auth.currentUser?.uid;
+    if (!ownerId) return [];
+    const snap = await getDocs(query(collection(db, USER_INFO_COLLECTION), where('ownerId', '==', ownerId)));
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch (err) {
     console.warn("Could not fetch user_info list from Firestore:", err);
@@ -802,11 +672,7 @@ export async function getUserInfoList() {
  */
 export async function getAgentInfo(agentId) {
   try {
-    const cleanId = getCleanTitleId(agentId);
-    const docSnap = await getDoc(doc(db, AGENT_INFO_COLLECTION, cleanId));
-    if (docSnap.exists()) {
-      return { id: docSnap.id, ...docSnap.data() };
-    }
+    return await getAgentById(agentId);
   } catch (err) {
     console.warn("Could not fetch agent_info from Firestore:", err);
   }
@@ -840,7 +706,9 @@ export async function getConversations(agentNameOrId, maxLimit = 50) {
       }
     } else {
       // All Agents: returns each agent's single overall conversation document
-      const snap = await getDocs(collection(db, CONVERSATIONS_COLLECTION));
+      const ownerId = auth.currentUser?.uid;
+      if (!ownerId) return localLogs;
+      const snap = await getDocs(query(collection(db, CONVERSATIONS_COLLECTION), where('ownerId', '==', ownerId), limit(maxLimit)));
       const firestoreDocs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
       if (firestoreDocs.length > 0) {
         return firestoreDocs;
@@ -908,27 +776,13 @@ export async function recordAgentDownload(agentId, currentAgent) {
 export async function checkAndPurgeExpiredAgentStorage() {
   const now = Date.now();
   let purgedCount = 0;
-
   try {
-    const q = query(
-      collection(db, AGENTS_COLLECTION),
-      where('storageStatus', '==', 'active')
-    );
-    const snap = await getDocs(q);
-
-    for (const d of snap.docs) {
-      const data = d.data();
-      if (data.storageExpiresAt && data.storageExpiresAt < now) {
-        // Expired after 15 days -> Purge storage snapshot
-        await updateDoc(d.ref, {
-          storageStatus: 'purged',
-          purgedAt: now,
-          cloudSnapshotUrl: null
-        });
+    const agents = await getAgents();
+    for (const agent of agents) {
+      if (agent.storageStatus === 'active' && Number(agent.storageExpiresAt) < now) {
+        await agentApiRequest('PATCH', '', { agentId: agent.id, updates: { storageStatus: 'purged', purgedAt: now, cloudSnapshotUrl: null } });
         purgedCount++;
-        try {
-          localStorage.removeItem(`storage_lifecycle_${d.id}`);
-        } catch (e) {}
+        try { localStorage.removeItem(`storage_lifecycle_${agent.id}`); } catch (e) {}
       }
     }
   } catch (err) {

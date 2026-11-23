@@ -1,56 +1,13 @@
-import { createSign } from 'node:crypto';
 import { executeCentralAIResponse } from '../../src/services/centralAiEngine.js';
 import { sanitizePublicRecords } from '../../src/utils/publicDataSanitizer.js';
+import { firestoreGet, firestoreListByField, serviceAccessToken, verifyFirebaseIdToken, privateAgentDocumentId } from '../_lib/firebaseServer.js';
 
-const FIRESTORE_BASE = `https://firestore.googleapis.com/v1/projects/${process.env.FIREBASE_PROJECT_ID || 'ai-agent-11df2'}/databases/(default)/documents`;
 const PUBLIC_AGENT_FIELDS = ['name', 'greeting', 'avatar', 'themeColor', 'accentColor', 'position', 'voice', 'navigation'];
 
 function json(res, status, body) {
   res.status(status).setHeader('Content-Type', 'application/json; charset=utf-8');
   res.setHeader('Cache-Control', 'no-store');
   res.end(JSON.stringify(body));
-}
-
-function decodeValue(value) {
-  if (!value) return null;
-  if ('stringValue' in value) return value.stringValue;
-  if ('integerValue' in value) return Number(value.integerValue);
-  if ('doubleValue' in value) return value.doubleValue;
-  if ('booleanValue' in value) return value.booleanValue;
-  if ('mapValue' in value) return decodeFields(value.mapValue.fields || {});
-  if ('arrayValue' in value) return (value.arrayValue.values || []).map(decodeValue);
-  return null;
-}
-
-function decodeFields(fields = {}) {
-  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, decodeValue(value)]));
-}
-
-async function firestoreAccessToken() {
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) throw new Error('Server Firebase credentials are not configured');
-  const account = JSON.parse(raw);
-  if (!account.client_email || !account.private_key) throw new Error('Invalid server Firebase credentials');
-  const now = Math.floor(Date.now() / 1000);
-  const encode = obj => Buffer.from(JSON.stringify(obj)).toString('base64url');
-  const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({ iss: account.client_email, scope: 'https://www.googleapis.com/auth/datastore', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })}`;
-  const signer = createSign('RSA-SHA256');
-  signer.update(unsigned);
-  const assertion = `${unsigned}.${signer.sign(account.private_key, 'base64url')}`;
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion })
-  });
-  if (!response.ok) throw new Error('Could not authenticate with Firestore');
-  return (await response.json()).access_token;
-}
-
-async function readAgent(collection, id, accessToken) {
-  const response = await fetch(`${FIRESTORE_BASE}/${collection}/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${accessToken}` } });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error('Agent configuration lookup failed');
-  const doc = await response.json();
-  return { ...decodeFields(doc.fields), _documentId: doc.name?.split('/').pop() };
 }
 
 function publicConfig(agent) {
@@ -72,36 +29,61 @@ export default async function handler(req, res) {
   }
   if (req.method !== 'POST' && req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
   try {
-    const agentId = String(req.method === 'GET' ? req.query?.agentId : req.body?.agentId || '').trim();
-    if (!agentId || agentId.length > 128) return json(res, 400, { error: 'A valid widget identifier is required' });
-    const token = await firestoreAccessToken();
-    const [pub, priv] = await Promise.all([readAgent('public_agents', agentId, token), readAgent('private_agents', agentId, token)]);
+    const requestedId = String(req.method === 'GET' ? req.query?.agentId : req.body?.agentId || '').trim();
+    if (!requestedId || requestedId.length > 128) return json(res, 400, { error: 'A valid widget identifier is required' });
+    const token = await serviceAccessToken(['https://www.googleapis.com/auth/datastore']);
+    let pub = await firestoreGet('public_agents', requestedId, token);
+    let priv = null;
+    let ownerClaims = null;
+    if (pub?.widgetId) {
+      const matches = await firestoreListByField('private_agents', 'widgetId', requestedId, token);
+      priv = matches.find(item => item.widgetId === requestedId && item.agentId) || null;
+    } else {
+      ownerClaims = await verifyFirebaseIdToken(req).catch(() => null);
+      if (ownerClaims?.user_id) {
+        priv = await firestoreGet('private_agents', privateAgentDocumentId(ownerClaims.user_id, requestedId), token);
+        if (priv?.widgetId) pub = await firestoreGet('public_agents', priv.widgetId, token);
+      }
+    }
+    const agentId = String(priv?.agentId || '');
     if (!pub || !priv || pub.isDeleted || pub.status === 'inactive') return json(res, 404, { error: 'Widget is unavailable' });
-    if (!priv.tenantId || !priv.agentId || priv.agentId !== agentId || (pub.agentId && pub.agentId !== agentId)) return json(res, 403, { error: 'Agent authorization failed' });
+    if (!priv.tenantId || !priv.agentId || priv.agentId !== agentId || (pub.widgetId && pub.widgetId !== priv.widgetId)) return json(res, 403, { error: 'Agent authorization failed' });
     const allowedOrigins = Array.isArray(pub.allowedOrigins) ? pub.allowedOrigins : [];
-    if (origin && allowedOrigins.length && !allowedOrigins.includes(origin)) return json(res, 403, { error: 'Widget origin is not authorized' });
-    res.setHeader('Access-Control-Allow-Origin', origin && allowedOrigins.includes(origin) ? origin : '*');
+    let ownerPreview = false;
+    if (origin && allowedOrigins.length && !allowedOrigins.includes(origin)) {
+      ownerClaims ||= await verifyFirebaseIdToken(req).catch(() => null);
+      ownerPreview = Boolean(ownerClaims?.user_id && ownerClaims.user_id === priv.tenantId);
+      if (!ownerPreview) return json(res, 403, { error: 'Widget origin is not authorized' });
+    }
+    res.setHeader('Access-Control-Allow-Origin', origin && (allowedOrigins.includes(origin) || ownerPreview) ? origin : '*');
     res.setHeader('Vary', 'Origin');
 
-    if (req.method === 'GET') return json(res, 200, { ...publicConfig(pub), widgetId: agentId });
+    if (req.method === 'GET') return json(res, 200, { ...publicConfig(pub), widgetId: pub.widgetId });
     const userMessage = String(req.body?.message || '').trim();
     if (!userMessage || userMessage.length > 4000) return json(res, 400, { error: 'A valid message is required' });
     const databaseRecords = sanitizePublicRecords(priv.databaseRecords, priv.publicFieldAllowlist);
+    const conversationId = String(req.body?.conversationId || '').slice(0, 128) || `${agentId}:${Date.now()}`;
+    const providerKey = priv.apiKey || process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY || '';
+    const configuredModel = String(priv.model || '');
+    const model = providerKey.startsWith('gsk_')
+      ? (configuredModel.includes('8B') ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile')
+      : (process.env.GEMINI_MODEL || (configuredModel.includes('2.0') ? 'gemini-2.0-flash' : 'gemini-2.5-flash'));
     const result = await executeCentralAIResponse({
       userMessage,
-      sessionId: String(req.body?.conversationId || '').slice(0, 128) || `${agentId}:${Date.now()}`,
-      agentConfig: { name: pub.name, role: priv.publicRole || 'Customer Support Assistant', companyName: priv.publicCompanyName || pub.name },
+      sessionId: conversationId,
+      agentConfig: { name: pub.name, role: priv.publicRole || priv.role || 'Customer Support Assistant', companyName: priv.publicCompanyName || priv.companyName || pub.name },
       tenantId: priv.tenantId,
       agentId,
       databaseRecords,
       knowledgeBase: Array.isArray(priv.publicKnowledgeBase) ? priv.publicKnowledgeBase : [],
-      siteBlueprint: priv.publicSiteBlueprint || null,
-      apiKey: process.env.GROQ_API_KEY || ''
+      siteBlueprint: null,
+      apiKey: providerKey,
+      model
     });
     return json(res, 200, {
       reply: String(result.reply || '').slice(0, 4000),
       language: result.language || 'en-US',
-      conversationId: String(req.body?.conversationId || `${agentId}:${Date.now()}`).slice(0, 128),
+      conversationId,
       optionalPublicSources: safePublicSources(result.groundedSources || []),
       optionalNavigationAction: null
     });

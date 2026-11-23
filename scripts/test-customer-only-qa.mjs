@@ -85,10 +85,11 @@ assert(widgetSrc.includes('AUDIENCE IS CONSUMER / CUSTOMER ONLY'), 'widget.js mu
 assert(widgetSrc.includes('NEVER answer technical database queries, schema questions'), 'widget.js must forbid database query answers');
 console.log('✓ Test 4 Passed: widget.js prompt contains strict customer-only rules.');
 
-// Test 5: Verify aiCompletionService.js Customer-Only Rule
-console.log('\nTest 5: Verifying aiCompletionService.js Customer-Only Rule...');
-const aiCompSrc = fs.readFileSync('src/services/aiCompletionService.js', 'utf-8');
-assert(aiCompSrc.includes('STRICT CUSTOMER-ONLY INTERACTIONS'), 'aiCompletionService.js must include customer-only rule');
-console.log('✓ Test 5 Passed: aiCompletionService.js rules verified.');
+// Test 5: Verify the single production answer engine enforces customer-only interactions.
+console.log('\nTest 5: Verifying central backend Customer-Only Rule...');
+const centralSrc = fs.readFileSync('src/services/centralAiEngine.js', 'utf-8');
+assert(centralSrc.includes('STRICT CUSTOMER-ONLY INTERACTIONS'), 'central AI engine must include customer-only rule');
+assert(!fs.readFileSync('src/services/aiCompletionService.js', 'utf-8').includes('export async function generateAIResponse'), 'Browser answer generation must not remain as a parallel production path');
+console.log('✓ Test 5 Passed: answer generation is centralized and customer-only.');
 
 console.log('\n🎉 ALL CUSTOMER-ONLY TRAINING & DEVELOPER QUERY ELIMINATION TESTS PASSED 100%! 🚀');

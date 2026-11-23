@@ -9,7 +9,7 @@
   // Find the widget script tag safely across all bundlers, defer, async, and iframe setups
   function getWidgetScript() {
     if (document.currentScript) return document.currentScript;
-    const scripts = document.querySelectorAll('script[src*="widget.js"], script[data-agent-id], script[data-api-key]');
+    const scripts = document.querySelectorAll('script[src*="widget.js"], script[data-agent-id]');
     if (scripts.length > 0) return scripts[scripts.length - 1];
     const all = document.getElementsByTagName('script');
     return all.length > 0 ? all[all.length - 1] : null;
@@ -55,11 +55,7 @@
     themeColor: '#6366f1',
     accentColor: '#06b6d4',
     position: 'bottom-right',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces',
-    knowledgeBase: [
-      { q: 'hours', a: 'Our support team is available 24/7 online.' },
-      { q: 'contact', a: 'You can email us or submit an inquiry through our website anytime.' }
-    ]
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop&crop=faces'
   };
 
   // Universal Archetype Profiles: adapts conversational memory, phrasing, and domain isolation to ANY website type
@@ -246,7 +242,11 @@
     if (/\b(restaurant|cafe|dining|food|dish|dishes|menu|bakery|pizza|burger|meal|kitchen|cuisine|dessert|biryani|pasta)\b/i.test(text)) {
       return 'food';
     }
-    if (/\b(hotel|resort|room|rooms|stay|suite|check-in|check-out|villa|hostel|banquet|lodge)\b/i.test(text)) {
+    // Financial identity outranks incidental words such as "meeting room" in office copy.
+    if (/\b(finance|financial|tax\s*filing|itr|gst|wealth\s*management|accounting|audit|loan|loans|investment|mutual\s*fund|chartered|consultancy)\b/i.test(text)) {
+      return 'financial';
+    }
+    if (/\b(hotel|resort|guest\s+house|guest\s+reservation|room\s+(?:booking|reservation)|stay\s+booking|suite\s+booking|check-in|check-out|villa|hostel|banquet|lodge)\b/i.test(text)) {
       return 'hospitality';
     }
     if (/\b(software|saas|subscription|pricing\s*tier|starter\s*plan|pro\s*plan|enterprise\s*plan|cloud\s*platform|workspace|api\s*limit)\b/i.test(text)) {
@@ -254,9 +254,6 @@
     }
     if (/\b(car|cars|vehicle|vehicles|automotive|dealership|showroom|test\s*drive|suv|sedan|hatchback|motorcycle|bike|servicing)\b/i.test(text)) {
       return 'automotive';
-    }
-    if (/\b(finance|financial|tax\s*filing|itr|gst|wealth\s*management|accounting|audit|loan|loans|investment|mutual\s*fund|chartered|consultancy)\b/i.test(text)) {
-      return 'financial';
     }
     if (/\b(real\s*estate|property|properties|apartment|apartments|flat|flats|2bhk|3bhk|plot|plots|lease|rent\s*home|commercial\s*space|site\s*visit)\b/i.test(text)) {
       return 'realestate';

@@ -16,10 +16,19 @@ import {
   clearAccuracyAuditLog
 } from '../src/utils/accuracyVerificationEngine.js';
 import { verifyAndPolishAnswer } from '../src/utils/projectArchitectureAnalyzer.js';
-import { generateAIResponse } from '../src/services/aiCompletionService.js';
+import { executeCentralAIResponse } from '../src/services/centralAiEngine.js';
 
 const widgetPath = path.resolve(process.cwd(), 'public/widget.js');
 const widgetSrc = fs.readFileSync(widgetPath, 'utf8');
+
+async function queryCentral(question, databaseRecords, sessionId) {
+  const result = await executeCentralAIResponse({
+    userMessage: question, databaseRecords, knowledgeBase: staleConflictKb,
+    agentConfig: { name: 'Sunrise College Assistant', companyName: 'Sunrise College' },
+    tenantId: 'test-tenant', agentId: 'sunrise-agent', sessionId
+  });
+  return result.reply;
+}
 
 const sampleCourses = [
   {
@@ -224,31 +233,13 @@ async function runTests() {
     assert.equal(lookupConsistentAnswer(k2, v2), null, 'Consistency ledger must invalidate immediately on data change');
 
     // End-to-end Studio consistency test across rephrasings
-    const studioA1 = await generateAIResponse(
-      'What is the fee for Class 11 Science?',
-      'You are Sunrise College Assistant.',
-      staleConflictKb,
-      '',
-      { agentName: 'Sunrise College', databaseRecords: sampleCourses }
-    );
-    const studioA2 = await generateAIResponse(
-      'How much does Class 11 Science cost?',
-      'You are Sunrise College Assistant.',
-      staleConflictKb,
-      '',
-      { agentName: 'Sunrise College', databaseRecords: sampleCourses }
-    );
+    const studioA1 = await queryCentral('What is the fee for Class 11 Science?', sampleCourses, 'accuracy-a1');
+    const studioA2 = await queryCentral('How much does Class 11 Science cost?', sampleCourses, 'accuracy-a2');
     assert.equal(studioA1, studioA2, 'Rephrased factual questions in Studio must return consistent verified answers');
     assert.ok(studioA1.includes('₹28,000/yr'), `Must use authoritative ₹28,000/yr, not stale ₹20,000: ${studioA1}`);
 
     // Now update catalog price to ₹30,000/yr -> Studio MUST immediately return ₹30,000/yr (no stale cache!)
-    const studioA3 = await generateAIResponse(
-      'How much does Class 11 Science cost?',
-      'You are Sunrise College Assistant.',
-      staleConflictKb,
-      '',
-      { agentName: 'Sunrise College', databaseRecords: updatedCourses }
-    );
+    const studioA3 = await queryCentral('How much does Class 11 Science cost?', updatedCourses, 'accuracy-a3');
     assert.ok(studioA3.includes('₹30,000/yr'), `Updated live DB price must immediately invalidate cache: ${studioA3}`);
 
     console.log('✅ Test 5 passed: Rephrased queries stay 100% consistent and auto-invalidate on live data changes');

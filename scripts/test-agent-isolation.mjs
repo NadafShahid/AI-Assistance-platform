@@ -137,3 +137,9 @@ assert.strictEqual(safeWordBoundaryMatch('science', 'std 11th 12th science'), tr
 console.log('  ✓ Greeting "hi" verified to NEVER collide with "high-fidelity", "high school", or "shikshan"');
 
 console.log('\n🎉 ALL MULTI-AGENT ISOLATION & ACCURACY TESTS PASSED PERFECTLY!\n');
+
+assert.strictEqual(
+  detectWebsiteArchetype('Smita Financial Consultancy Services', 'The contact form is in a meeting room on the about page.'),
+  'financial',
+  'A financial consultancy must not be classified as hospitality because its site mentions a room'
+);
