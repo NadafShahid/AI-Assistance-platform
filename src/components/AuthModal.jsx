@@ -18,7 +18,7 @@ import {
   loginAsGuest
 } from '../firebase';
 
-export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
+export default function AuthModal({ isOpen, onClose, onLoginSuccess, requireAccount = false, accountMessage = 'Sign in or create an account to save your assistant. Your form will be ready when you return.' }) {
   const [mode, setMode] = useState('login'); // 'login' | 'register'
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -44,13 +44,13 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
       console.warn("Auth error:", err);
       // Clean readable error messages
       if (err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
-        setError('Invalid email or password. You can also use 1-Click Instant Demo Access below.');
+        setError(requireAccount ? 'Invalid email or password.' : 'Invalid email or password. You can also use 1-Click Instant Demo Access below.');
       } else if (err.code === 'auth/email-already-in-use') {
         setError('Email already in use. Please sign in instead.');
       } else if (err.code === 'auth/weak-password') {
         setError('Password must be at least 6 characters.');
       } else {
-        setError(err.message || 'Authentication failed. Please try again or use Demo Access.');
+        setError(err.message || (requireAccount ? 'Authentication failed. Please try again.' : 'Authentication failed. Please try again or use Demo Access.'));
       }
     } finally {
       setIsLoading(false);
@@ -108,7 +108,9 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
         </div>
 
         {/* 1-Click Demo Access Banner */}
-        <div className="px-6 pt-5 pb-2">
+        {requireAccount ? (
+          <p className="px-6 py-4 text-sm text-slate-600">{accountMessage}</p>
+        ) : <div className="px-6 pt-5 pb-2">
           <button
             type="button"
             onClick={handleGuestLogin}
@@ -122,7 +124,7 @@ export default function AuthModal({ isOpen, onClose, onLoginSuccess }) {
             <span className="px-3 text-[11px] text-slate-400 uppercase tracking-wider font-semibold">Or use email</span>
             <div className="flex-1 border-t border-slate-200" />
           </div>
-        </div>
+        </div>}
 
         {/* Auth Mode Toggle Tabs */}
         <div className="flex items-center px-6 gap-2 border-b border-slate-100">

@@ -66,12 +66,17 @@ export default async function handler(req, res) {
     const providerKey = priv.apiKey || process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY || '';
     const configuredModel = String(priv.model || '');
     const model = providerKey.startsWith('gsk_')
-      ? (configuredModel.includes('8B') ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile')
+      ? (/\b8b\b/i.test(configuredModel) ? 'llama-3.1-8b-instant' : 'llama-3.3-70b-versatile')
       : (process.env.GEMINI_MODEL || (configuredModel.includes('2.0') ? 'gemini-2.0-flash' : 'gemini-2.5-flash'));
     const result = await executeCentralAIResponse({
       userMessage,
       sessionId: conversationId,
-      agentConfig: { name: pub.name, role: priv.publicRole || priv.role || 'Customer Support Assistant', companyName: priv.publicCompanyName || priv.companyName || pub.name },
+      agentConfig: {
+        name: pub.name,
+        role: priv.publicRole || priv.role || 'Customer Support Assistant',
+        companyName: priv.publicCompanyName || priv.companyName || pub.name,
+        prompt: priv.prompt || priv.systemPrompt || ''
+      },
       tenantId: priv.tenantId,
       agentId,
       databaseRecords,

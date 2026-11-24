@@ -43,7 +43,7 @@ import {
   getAgentStorageInfo,
   getSavedUserSession,
   saveUserSession,
-  loginAsGuest,
+  auth,
   logoutUser
 } from './firebase';
 import {
@@ -137,27 +137,52 @@ export default function App() {
   const [firestoreSyncSuccess, setFirestoreSyncSuccess] = useState(false);
 
   // Authentication & View Mode State ('landing' | 'dashboard')
-  const [currentUser, setCurrentUser] = useState(() => getSavedUserSession());
-  const [viewMode, setViewMode] = useState(() => (getSavedUserSession() ? 'dashboard' : 'landing'));
+  const [currentUser, setCurrentUser] = useState(null);
+  const [viewMode, setViewMode] = useState('landing');
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isBuilderSignIn, setIsBuilderSignIn] = useState(false);
+  const [isCreateSignInOpen, setIsCreateSignInOpen] = useState(false);
 
   const handleLoginSuccess = (user) => {
+    if (user.uid !== currentUser?.uid) {
+      setAssistantsList([]);
+      setSelectedAssistantId(null);
+      setAssistantListStatus('loading');
+    }
     setCurrentUser(user);
     setViewMode('dashboard');
     setActiveTab('overview');
   };
 
+  useEffect(() => {
+    const saved = getSavedUserSession();
+    if (!saved || saved.isGuest) return;
+    let active = true;
+    auth.authStateReady().then(() => {
+      if (active && auth.currentUser?.uid === saved.uid) {
+        setCurrentUser(saved);
+        setViewMode('dashboard');
+      }
+    });
+    return () => { active = false; };
+  }, []);
+
   const handleLogout = async () => {
     await logoutUser();
+    setAssistantsList([]);
+    setSelectedAssistantId(null);
     setCurrentUser(null);
     setViewMode('landing');
   };
 
-  const handleDirectDemoLogin = () => {
-    const guestUser = loginAsGuest('Alex Rivera', 'Cloud Lead & AI Architect');
-    setCurrentUser(guestUser);
-    setViewMode('dashboard');
-    setActiveTab('overview');
+  const handleOpenDashboard = async () => {
+    await auth.authStateReady();
+    if (currentUser && !currentUser.isGuest && auth.currentUser?.uid === currentUser.uid) {
+      setViewMode('dashboard');
+      return;
+    }
+    setIsBuilderSignIn(true);
+    setIsAuthModalOpen(true);
   };
 
   // Active Navigation Tab
@@ -201,9 +226,9 @@ export default function App() {
       apiKey: trimmed,
       updatedAt: new Date().toISOString()
     };
-    setAssistantsList((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
     try {
-      await saveAgent(updated);
+      const saved = await saveAgent(updated);
+      setAssistantsList((prev) => prev.map((a) => (a.id === updated.id ? { ...a, apiKey: trimmed, hasProviderKey: saved.hasProviderKey } : a)));
       localStorage.setItem('user_groq_api_key', trimmed);
       AI_KEYS.GROQ_API_KEY = trimmed;
       setKeySavedFeedback(true);
@@ -328,6 +353,9 @@ export default function App() {
   const [selectedAssistantId, setSelectedAssistantId] = useState(null);
   const [isCreateAssistantModalOpen, setIsCreateAssistantModalOpen] = useState(false);
   const [assistantSearch, setAssistantSearch] = useState('');
+  const [assistantListStatus, setAssistantListStatus] = useState('loading');
+  const assistantOwnerId = currentUser?.isGuest ? null : currentUser?.uid;
+  const isLoadingAssistants = Boolean(assistantOwnerId) && assistantListStatus === 'loading';
 
   // Subscribe to real-time Firestore updates & run 15-day auto-purge
   useEffect(() => {
@@ -347,7 +375,17 @@ export default function App() {
       setDriveStatus(status);
     });
 
-    const unsub = subscribeToAgents((agents) => {
+    return unsubDrive;
+  }, []);
+
+  useEffect(() => {
+    setAssistantsList([]);
+    setSelectedAssistantId(null);
+    if (!assistantOwnerId) return;
+
+    setAssistantListStatus('loading');
+    return subscribeToAgents((agents) => {
+      setAssistantListStatus('ready');
       if (agents && agents.length > 0) {
         setAssistantsList(agents);
         setSelectedAssistantId((prevId) => {
@@ -360,12 +398,8 @@ export default function App() {
         setAssistantsList([]);
         setSelectedAssistantId(null);
       }
-    });
-    return () => {
-      if (typeof unsub === 'function') unsub();
-      if (typeof unsubDrive === 'function') unsubDrive();
-    };
-  }, []);
+    }, () => setAssistantListStatus('error'));
+  }, [assistantOwnerId]);
 
   const currentAssistant = assistantsList.find(a => a.id === selectedAssistantId) || assistantsList[0] || null;
 
@@ -597,8 +631,7 @@ export default function App() {
       let syncedGreeting = firstMessageText || base.greeting || base.firstMessage || `Hello! I am ${finalName}. How can I assist you today?`;
       syncedGreeting = syncedGreeting.replace(/I am (app Concierge|Site Sentinel|Help Desk AI|[A-Za-z0-9_\s]+?)(?=[.,!])/i, `I am ${finalName}`);
 
-      let syncedPrompt = systemPromptText || base.prompt || base.systemPrompt || `You are ${finalName}, a helpful voice assistant.`;
-      syncedPrompt = syncedPrompt.replace(/You are (app Concierge|Site Sentinel|Help Desk AI|[A-Za-z0-9_\s]+?)(?=[,.\n])/i, `You are ${finalName}`);
+      const syncedPrompt = systemPromptText;
 
       return {
         ...base,
@@ -611,7 +644,6 @@ export default function App() {
         model: selectedModel || base.model || 'Groq Llama 3.3 70B Versatile',
         voice: selectedVoice || base.voice,
         preset: 'High Intelligence',
-        apiKey: base.apiKey || getUserApiKeys().activeKey || '',
         knowledgeBase: (editingFaqList && editingFaqList.length > 0) ? editingFaqList : (base.knowledgeBase || []),
         databaseRecords: Array.isArray(base.databaseRecords) ? base.databaseRecords : [],
         tools: (toolsList !== undefined) ? toolsList : (base.tools || []),
@@ -698,6 +730,7 @@ export default function App() {
 
   // Update editor state when selecting another assistant
   useEffect(() => {
+    setEditingAgentKey(false);
     if (currentAssistant) {
       setSystemPromptText(currentAssistant.prompt || currentAssistant.systemPrompt || '');
       setAssistantName(currentAssistant.name || '');
@@ -798,10 +831,12 @@ export default function App() {
     const prevDocId = currentAssistant?._firestoreDocId;
     const updated = getActiveAgentData(currentAssistant);
     if (!updated) return;
+    const enteredKey = editingAgentKey ? customKeyInput.trim() : '';
+    if (enteredKey) updated.apiKey = enteredKey;
     try {
       setIsSyncingFirestore(true);
       const saved = await saveAgent(updated, { previousId: prevId, previousName: prevName, previousDocId: prevDocId });
-      const finalAgent = { ...updated, id: saved.id || updated.id, _firestoreDocId: saved.id || updated.id, previousNames: saved.previousNames || updated.previousNames };
+      const finalAgent = { ...updated, id: saved.id || updated.id, widgetId: saved.widgetId || updated.widgetId, hasProviderKey: saved.hasProviderKey, _firestoreDocId: saved.id || updated.id, previousNames: saved.previousNames || updated.previousNames };
 
       if (prevName && finalAgent.name && prevName !== finalAgent.name) {
         renameAgentFolderInDrive(prevName, finalAgent.name).catch(() => {});
@@ -835,6 +870,7 @@ export default function App() {
         }, []);
       });
       setSelectedAssistantId(finalAgent.id);
+      if (enteredKey) setEditingAgentKey(false);
       setFirestoreSyncSuccess(true);
       setTimeout(() => setFirestoreSyncSuccess(false), 3000);
     } catch (err) {
@@ -861,8 +897,7 @@ export default function App() {
     let syncedGreeting = currentAssistant.greeting || currentAssistant.firstMessage || `Hello! I am ${cleanNewName}. How can I assist you today?`;
     syncedGreeting = syncedGreeting.replace(/I am (app Concierge|Site Sentinel|Help Desk AI|[A-Za-z0-9_\s]+?)(?=[.,!])/i, `I am ${cleanNewName}`);
 
-    let syncedPrompt = currentAssistant.prompt || currentAssistant.systemPrompt || `You are ${cleanNewName}, a helpful voice assistant.`;
-    syncedPrompt = syncedPrompt.replace(/You are (app Concierge|Site Sentinel|Help Desk AI|[A-Za-z0-9_\s]+?)(?=[,.\n])/i, `You are ${cleanNewName}`);
+    const syncedPrompt = currentAssistant.prompt || currentAssistant.systemPrompt || '';
 
     const updated = {
       ...currentAssistant,
@@ -928,7 +963,7 @@ export default function App() {
 
       const script = document.createElement('script');
       script.src = `/widget.js?t=${Date.now()}`;
-      script.setAttribute('data-agent-id', cleanId);
+      script.setAttribute('data-agent-id', target.widgetId || cleanId);
       script.setAttribute('data-voice', voice);
       script.setAttribute('data-auto-open', 'true');
       script.defer = true;
@@ -1589,13 +1624,6 @@ export default function App() {
           if (updated.firstMessage) {
             updated.firstMessage = updated.firstMessage.replace(/I am (app Concierge|Site Sentinel|Help Desk AI|[A-Za-z0-9_\s]+?)(?=[.,!])/i, `I am ${newName}`);
           }
-          if (updated.prompt) {
-            updated.prompt = updated.prompt.replace(/You are (app Concierge|Site Sentinel|Help Desk AI|[A-Za-z0-9_\s]+?)(?=[,.\n])/i, `You are ${newName}`);
-            setSystemPromptText(updated.prompt);
-          }
-          if (updated.systemPrompt) {
-            updated.systemPrompt = updated.systemPrompt.replace(/You are (app Concierge|Site Sentinel|Help Desk AI|[A-Za-z0-9_\s]+?)(?=[,.\n])/i, `You are ${newName}`);
-          }
 
           setAssistantsList(prev => {
             let replaced = false;
@@ -1810,12 +1838,17 @@ export default function App() {
     return (
       <>
         <LandingPage
-          onOpenAuth={() => setIsAuthModalOpen(true)}
-          onDirectDemoLogin={handleDirectDemoLogin}
+          onOpenAuth={() => {
+            setIsBuilderSignIn(false);
+            setIsAuthModalOpen(true);
+          }}
+          onOpenDashboard={handleOpenDashboard}
         />
         {isAuthModalOpen && (
           <AuthModal
             isOpen={isAuthModalOpen}
+            requireAccount={isBuilderSignIn}
+            accountMessage="Sign in or create an account to open your dashboard."
             onClose={() => setIsAuthModalOpen(false)}
             onLoginSuccess={handleLoginSuccess}
           />
@@ -2257,7 +2290,11 @@ export default function App() {
 
                 {/* Assistants List */}
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
-                  {assistantsList.length === 0 ? (
+                  {isLoadingAssistants ? (
+                    <p role="status" className="p-4 text-xs text-slate-500">Loading assistants…</p>
+                  ) : assistantOwnerId && assistantListStatus === 'error' && assistantsList.length === 0 ? (
+                    <p role="status" className="p-4 text-xs text-slate-500">Could not load assistants. Retrying…</p>
+                  ) : assistantsList.length === 0 ? (
                     <div className="flex flex-col items-center justify-center p-5 text-center text-slate-500 mt-10 space-y-3">
                       <div className="w-12 h-12 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-400">
                         <Bot size={24} />
@@ -2323,7 +2360,11 @@ export default function App() {
 
             {/* Right Detail Workspace */}
             <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-white">
-              {!currentAssistant ? (
+              {!currentAssistant && isLoadingAssistants ? (
+                <p role="status" className="m-auto text-sm text-slate-500">Loading assistants…</p>
+              ) : !currentAssistant && assistantOwnerId && assistantListStatus === 'error' ? (
+                <p role="status" className="m-auto text-sm text-slate-500">Could not load assistants. Retrying…</p>
+              ) : !currentAssistant ? (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 text-center bg-[#F8FAFC] select-none">
                   <div className="relative mb-5">
                     <div className="w-20 h-20 rounded-3xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600 shadow-sm">
@@ -2801,9 +2842,9 @@ export default function App() {
                                 <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
                                   <div className="flex-1 min-w-[200px] h-9 px-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between text-xs font-mono text-slate-800">
                                     <span className="truncate pr-2">
-                                      {showInferenceKey
-                                        ? (currentAssistant?.apiKey || getUserApiKeys().activeKey || '')
-                                        : (currentAssistant?.apiKey || getUserApiKeys().activeKey || '').substring(0, 14) + '••••••••••••••••••••••••••••'}
+                                      {showInferenceKey && currentAssistant?.apiKey
+                                        ? currentAssistant.apiKey
+                                        : currentAssistant?.hasProviderKey ? '••••••••••••••••••••••••••••' : 'No key saved for this assistant'}
                                     </span>
                                     <button
                                       type="button"
@@ -2817,7 +2858,7 @@ export default function App() {
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      setCustomKeyInput(currentAssistant?.apiKey || getUserApiKeys().activeKey || '');
+                                      setCustomKeyInput(currentAssistant?.apiKey || '');
                                       setEditingAgentKey(true);
                                     }}
                                     className="h-9 px-3 rounded-xl bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 text-xs font-medium flex items-center gap-1 transition-all cursor-pointer shrink-0 shadow-2xs"
@@ -2854,12 +2895,12 @@ export default function App() {
                               </div>
                               <div className="relative rounded-xl bg-slate-900 border border-slate-800 p-3 text-left">
                                 <div className="font-mono text-xs text-cyan-300 overflow-x-auto whitespace-pre-wrap break-all pr-24 leading-relaxed select-all">
-                                  {`<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`}
+                                  {`<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.widgetId || currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`}
                                 </div>
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    const snippet = `<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`;
+                                    const snippet = `<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.widgetId || currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`;
                                     navigator.clipboard.writeText(snippet);
                                     setCopiedKey('agent_script');
                                     setTimeout(() => setCopiedKey(null), 2000);
@@ -3208,12 +3249,12 @@ export default function App() {
 
                 <div className="relative group">
                   <pre className="p-4 rounded-xl bg-slate-900 border border-slate-800 font-mono text-cyan-300 text-xs overflow-x-auto select-all">
-{`<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`}
+{`<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.widgetId || currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`}
                   </pre>
                   <button
                     type="button"
                     onClick={() => {
-                      const snippet = `<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`;
+                      const snippet = `<script src="${window.location.origin}/widget.js" data-agent-id="${currentAssistant?.widgetId || currentAssistant?.id || currentAssistant?.name || 'Help Desk'}" defer></script>`;
                       handleCopy(snippet);
                     }}
                     className="absolute right-2.5 top-2.5 p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 transition-all cursor-pointer"
@@ -4265,10 +4306,20 @@ export default function App() {
         <CreateAssistantModal
           isOpen={isCreateAssistantModalOpen}
           onClose={() => setIsCreateAssistantModalOpen(false)}
+          isGuest={currentUser?.isGuest}
+          onSignInRequired={() => setIsCreateSignInOpen(true)}
           onAssistantCreated={(newAst) => {
             setAssistantsList(prev => [newAst, ...prev.filter(a => a.id !== newAst.id)]);
             handleSelectAssistant(newAst.id, newAst);
           }}
+        />
+      )}
+      {isCreateSignInOpen && (
+        <AuthModal
+          isOpen
+          requireAccount
+          onClose={() => setIsCreateSignInOpen(false)}
+          onLoginSuccess={setCurrentUser}
         />
       )}
 

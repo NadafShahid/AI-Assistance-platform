@@ -187,6 +187,7 @@ export const USER_INFO_COLLECTION = 'user_info';
 export const CONVERSATIONS_COLLECTION = 'conversations';
 
 async function agentApiRequest(method, path = '', body = undefined) {
+  await auth.authStateReady();
   const user = auth.currentUser;
   if (!user) throw new Error('Sign in to access agents');
   const idToken = await user.getIdToken();
@@ -233,12 +234,17 @@ export async function getAgents() {
 /**
  * Real-time subscription to agents
  */
-export function subscribeToAgents(callback) {
+export function subscribeToAgents(callback, onError) {
   let active = true;
   let timer;
   const refresh = async () => {
-    try { const agents = await getAgents(); if (active) callback(agents); }
-    catch (error) { console.warn('Secure agent subscription error:', error); }
+    try {
+      const response = await agentApiRequest('GET');
+      if (!Array.isArray(response.agents)) throw new Error('Invalid assistant list response');
+      if (active) callback(response.agents);
+    } catch (error) {
+      if (active) onError?.(error);
+    }
     if (active) timer = setTimeout(refresh, 10000);
   };
   refresh();
@@ -286,8 +292,9 @@ function sanitizeForFirestore(obj) {
  */
 export async function saveAgent(agent, options = {}) {
   const titleId = getCleanTitleId(agent.name || agent.title || agent.id);
-  const tenantId = agent.tenantId || agent.ownerId || auth.currentUser?.uid;
-  if (!tenantId) throw new Error('An authenticated tenant is required to save an agent');
+  await auth.authStateReady();
+  const tenantId = auth.currentUser?.uid;
+  if (!tenantId) throw new Error('Sign in to save your assistant.');
 
   // Collect all previous IDs / names that differ from the new titleId so old docs are ALWAYS deleted on rename
   const prevIdsToPurge = new Set();

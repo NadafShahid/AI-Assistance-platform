@@ -14,8 +14,10 @@ build/
 *.local
 *.pem
 *.key
+*.p12
 secrets.json
 serviceAccountKey.json
+*-firebase-adminsdk-*.json
 
 # Logs
 npm-debug.log*

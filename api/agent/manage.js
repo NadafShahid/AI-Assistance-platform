@@ -17,6 +17,8 @@ function publicView(pub, priv) {
     accentColor: pub.accentColor, position: pub.position, voice: pub.voice,
     navigation: pub.navigation || [], allowedOrigins: pub.allowedOrigins || [], status: pub.status || 'Active',
     archetype: priv.archetype || 'general', model: priv.model || '',
+    hasProviderKey: Boolean(String(priv.apiKey || '').trim()),
+    prompt: priv.prompt || priv.systemPrompt || '',
     knowledgeBase: Array.isArray(priv.publicKnowledgeBase) ? priv.publicKnowledgeBase : [],
     databaseRecords: sanitizePublicRecords(priv.databaseRecords, priv.publicFieldAllowlist),
     publicFieldAllowlist: priv.publicFieldAllowlist || {},
@@ -41,12 +43,17 @@ export default async function handler(req, res) {
         const pub = await firestoreGet('public_agents', priv.widgetId, token);
         return pub ? json(res, 200, { agent: publicView(pub, priv) }) : json(res, 404, { error: 'Agent not found' });
       }
-      const privateAgents = await firestoreListByField('private_agents', 'tenantId', claims.user_id, token);
+      const privateAgents = (await firestoreListByField('private_agents', 'tenantId', claims.user_id, token))
+        .filter(priv => priv.agentId && priv.widgetId && priv.tenantId === claims.user_id);
       const agents = [];
-      for (const priv of privateAgents) {
-        if (!priv.agentId || priv.tenantId !== claims.user_id) continue;
-        const pub = await firestoreGet('public_agents', priv.widgetId, token);
-        if (pub && !pub.isDeleted) agents.push(publicView(pub, priv));
+      const batchSize = 20;
+      for (let offset = 0; offset < privateAgents.length; offset += batchSize) {
+        const batch = privateAgents.slice(offset, offset + batchSize);
+        const views = await Promise.all(batch.map(async (priv) => {
+          const pub = await firestoreGet('public_agents', priv.widgetId, token);
+          return pub && !pub.isDeleted ? publicView(pub, priv) : null;
+        }));
+        agents.push(...views.filter(Boolean));
       }
       return json(res, 200, { agents: agents.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))) });
     }
@@ -82,19 +89,23 @@ export default async function handler(req, res) {
 
     const privateId = privateAgentDocumentId(claims.user_id, agentId);
     const prior = await firestoreGet('private_agents', privateId, token);
+    let savedProviderKey = prior?.apiKey;
     const previousId = String(req.body?.previousId || '').trim().replace(/\//g, '-');
     if (previousId && previousId !== agentId) {
       const oldPrivateId = privateAgentDocumentId(claims.user_id, previousId);
       const previous = await firestoreGet('private_agents', oldPrivateId, token);
       if (previous?.tenantId === claims.user_id) {
+        savedProviderKey ||= previous.apiKey;
         await Promise.all([firestoreDelete('private_agents', oldPrivateId, token), firestoreDelete('public_agents', previous.widgetId, token)]);
         await deleteAgentQdrantDocs(previousId, claims.user_id).catch(() => {});
       }
     }
     const now = new Date().toISOString();
     const candidateKnowledge = Array.isArray(agent.knowledgeBase) ? agent.knowledgeBase : [];
+    const hasKnowledgeInput = candidateKnowledge.length > 0 || Boolean(agent.sourceFile)
+      || agent.uploadedFiles?.length > 0 || Object.keys(agent.databaseRecords || {}).length > 0;
     const hasSourceEvidence = candidateKnowledge.some(item => item && typeof item.q === 'string' && typeof item.a === 'string' && item.sourceId && item.chunkId && item.path);
-    if (!prior && (!hasSourceEvidence || Number(agent.ingestionSummary?.extractedChunks || 0) < 1)) {
+    if (!prior && hasKnowledgeInput && (!hasSourceEvidence || !(Number(agent.ingestionSummary?.extractedChunks) >= 1))) {
       return json(res, 422, { error: 'Process at least one source file and save its extracted evidence before creating this agent' });
     }
     const widgetId = prior?.widgetId || randomUUID();
@@ -109,6 +120,7 @@ export default async function handler(req, res) {
     const publicKnowledgeBase = candidateKnowledge.filter(item => item && typeof item.q === 'string' && typeof item.a === 'string' && item.visibility !== 'INTERNAL_SYSTEM' && item.visibility !== 'ADMIN' && item.visibility !== 'STAFF').slice(0, 400);
     const privateConfig = {
       ...agent, tenantId: claims.user_id, ownerId: claims.user_id, agentId, widgetId,
+      apiKey: String(agent.apiKey || '').trim() || savedProviderKey || '',
       name: String(agent.name).slice(0, 160), publicRole: String(agent.role || 'Customer Support Assistant').slice(0, 160),
       publicCompanyName: String(agent.companyName || agent.websiteName || agent.name).slice(0, 180),
       publicKnowledgeBase, publicFieldAllowlist: agent.publicFieldAllowlist || {},

@@ -25,7 +25,7 @@ import {
 } from 'lucide-react';
 import { resolveLockedVoice } from '../utils/voiceConsistency';
 
-export default function LandingPage({ onOpenAuth, onDirectDemoLogin }) {
+export default function LandingPage({ onOpenAuth, onOpenDashboard }) {
   const [playingVoiceId, setPlayingVoiceId] = useState(null);
 
   const sampleVoices = [
@@ -114,7 +114,7 @@ export default function LandingPage({ onOpenAuth, onDirectDemoLogin }) {
             </button>
             <button
               type="button"
-              onClick={onDirectDemoLogin}
+              onClick={onOpenDashboard}
               className="h-9 px-4 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm shadow-indigo-500/20 active:scale-95 transition-all cursor-pointer"
             >
               <Sparkles size={14} />
@@ -149,7 +149,7 @@ export default function LandingPage({ onOpenAuth, onDirectDemoLogin }) {
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-3">
             <button
               type="button"
-              onClick={onDirectDemoLogin}
+              onClick={onOpenDashboard}
               className="w-full sm:w-auto h-12 px-8 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white text-sm font-bold flex items-center justify-center gap-2 shadow-md shadow-indigo-500/20 active:scale-95 transition-all cursor-pointer"
             >
               <span>Start Building Free in Dashboard</span>
@@ -280,7 +280,7 @@ export default function LandingPage({ onOpenAuth, onDirectDemoLogin }) {
                     </div>
                     <button
                       type="button"
-                      onClick={onDirectDemoLogin}
+                      onClick={onOpenDashboard}
                       className="px-3.5 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors shadow-2xs"
                     >
                       <Sparkles size={12} className="text-indigo-600" />
@@ -479,7 +479,7 @@ export default function LandingPage({ onOpenAuth, onDirectDemoLogin }) {
             <div className="pt-2">
               <button
                 type="button"
-                onClick={onDirectDemoLogin}
+                onClick={onOpenDashboard}
                 className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm shadow-amber-500/20"
               >
                 <span>Explore in Dashboard</span>
@@ -539,7 +539,7 @@ export default function LandingPage({ onOpenAuth, onDirectDemoLogin }) {
 
             <button
               type="button"
-              onClick={onDirectDemoLogin}
+              onClick={onOpenDashboard}
               className="w-full py-3.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm shadow-indigo-500/20 active:scale-[0.99]"
             >
               <span>Get Started Now (Instant Access)</span>
