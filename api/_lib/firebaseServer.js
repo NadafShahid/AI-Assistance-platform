@@ -12,12 +12,39 @@ const tokenCache = new Map();
 
 function encode(obj) { return Buffer.from(JSON.stringify(obj)).toString('base64url'); }
 
+export function getServiceAccount() {
+  let raw = String(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '').trim();
+  if (!raw) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_JSON environment variable is not configured');
+  }
+  if ((raw.startsWith("'") && raw.endsWith("'")) || (raw.startsWith('"') && raw.endsWith('"'))) {
+    raw = raw.slice(1, -1).trim();
+  }
+  if (!raw.startsWith('{')) {
+    try {
+      const decoded = Buffer.from(raw, 'base64').toString('utf8').trim();
+      if (decoded.startsWith('{')) raw = decoded;
+    } catch {}
+  }
+  let account;
+  try {
+    account = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON (${err.message})`);
+  }
+  if (!account.client_email) throw new Error('Service account is missing client_email');
+  if (!account.private_key) throw new Error('Service account is missing private_key');
+  if (typeof account.private_key === 'string') {
+    account.private_key = account.private_key.replace(/\\n/g, '\n').replace(/\r/g, '');
+  }
+  return account;
+}
+
 export async function serviceAccessToken(scopes = ['https://www.googleapis.com/auth/datastore']) {
   const scope = [...scopes].sort().join(' ');
   const cached = tokenCache.get(scope);
   if (cached && cached.expiresAt > Date.now() + 60_000) return cached.token;
-  const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '{}');
-  if (!account.client_email || !account.private_key) throw new Error('Server Firebase credentials are not configured');
+  const account = getServiceAccount();
   const now = Math.floor(Date.now() / 1000);
   const unsigned = `${encode({ alg: 'RS256', typ: 'JWT' })}.${encode({ iss: account.client_email, scope, aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })}`;
   const signer = createSign('RSA-SHA256');
@@ -27,7 +54,10 @@ export async function serviceAccessToken(scopes = ['https://www.googleapis.com/a
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion })
   });
-  if (!response.ok) throw new Error('Could not authenticate with Firebase services');
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`Could not authenticate with Firebase services (${response.status}): ${errorText}`);
+  }
   const result = await response.json();
   tokenCache.set(scope, { token: result.access_token, expiresAt: Date.now() + Number(result.expires_in || 3600) * 1000 });
   return result.access_token;
@@ -84,7 +114,10 @@ function encodeValue(value) {
 export async function firestoreGet(collection, id, token) {
   const response = await fetch(`${FIRESTORE_BASE}/${collection}/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${token}` } });
   if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`Firestore read failed (${response.status})`);
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`Firestore read failed (${response.status}): ${errorText}`);
+  }
   const doc = await response.json();
   return { ...decodeFields(doc.fields), _documentName: doc.name };
 }
@@ -98,7 +131,10 @@ export async function firestoreListByField(collection, field, value, token) {
       limit: 500
     } })
   });
-  if (!response.ok) throw new Error(`Firestore query failed (${response.status})`);
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`Firestore query failed (${response.status}): ${errorText}`);
+  }
   const results = await response.json();
   return results.filter(item => item.document).map(item => ({ ...decodeFields(item.document.fields), _documentName: item.document.name }));
 }
@@ -111,13 +147,19 @@ export async function firestoreSet(collection, id, value, token, merge = true) {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encodeValue(item)])) })
   });
-  if (!response.ok) throw new Error(`Firestore write failed (${response.status})`);
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`Firestore write failed (${response.status}): ${errorText}`);
+  }
   return true;
 }
 
 export async function firestoreDelete(collection, id, token) {
   const response = await fetch(`${FIRESTORE_BASE}/${collection}/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok && response.status !== 404) throw new Error(`Firestore delete failed (${response.status})`);
+  if (!response.ok && response.status !== 404) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(`Firestore delete failed (${response.status}): ${errorText}`);
+  }
 }
 
 export async function downloadPrivateObject(objectName, token) {

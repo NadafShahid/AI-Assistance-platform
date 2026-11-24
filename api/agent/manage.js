@@ -132,7 +132,10 @@ export default async function handler(req, res) {
     ]);
     return json(res, 200, { success: true, agent: publicView(publicConfig, privateConfig) });
   } catch (error) {
-    console.error('[agent/manage] Request failed', { message: error?.message });
-    return json(res, 503, { error: 'Agent management is temporarily unavailable' });
+    console.error('[agent/manage] Request failed', { message: error?.message, stack: error?.stack });
+    return json(res, 503, { 
+      error: error?.message || 'Agent management is temporarily unavailable',
+      detail: error?.message || 'Agent management is temporarily unavailable'
+    });
   }
 }
